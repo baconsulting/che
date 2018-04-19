@@ -25,13 +25,17 @@ import static org.eclipse.che.ide.ext.java.shared.Constants.EXTERNAL_LIBRARY_CHI
 import static org.eclipse.che.ide.ext.java.shared.Constants.EXTERNAL_LIBRARY_ENTRY;
 import static org.eclipse.che.ide.ext.java.shared.Constants.FILE_STRUCTURE;
 import static org.eclipse.che.ide.ext.java.shared.Constants.GET_JAVA_CORE_OPTIONS;
+import static org.eclipse.che.ide.ext.java.shared.Constants.GET_LINKED_MODEL;
 import static org.eclipse.che.ide.ext.java.shared.Constants.IMPLEMENTERS;
 import static org.eclipse.che.ide.ext.java.shared.Constants.ORGANIZE_IMPORTS;
 import static org.eclipse.che.ide.ext.java.shared.Constants.RECOMPUTE_POM_DIAGNOSTICS;
+import static org.eclipse.che.ide.ext.java.shared.Constants.REFACTORING_GET_RENAME_TYPE;
+import static org.eclipse.che.ide.ext.java.shared.Constants.REFACTORING_RENAME;
 import static org.eclipse.che.ide.ext.java.shared.Constants.REIMPORT_MAVEN_PROJECTS;
 import static org.eclipse.che.ide.ext.java.shared.Constants.REIMPORT_MAVEN_PROJECTS_REQUEST_TIMEOUT;
 import static org.eclipse.che.ide.ext.java.shared.Constants.UPDATE_JAVA_CORE_OPTIONS;
 import static org.eclipse.che.ide.ext.java.shared.Constants.USAGES;
+import static org.eclipse.che.ide.ext.java.shared.Constants.VALIDATE_RENAMED_NAME;
 import static org.eclipse.che.jdt.ls.extension.api.Commands.CREATE_SIMPLE_PROJECT;
 import static org.eclipse.che.jdt.ls.extension.api.Commands.FILE_STRUCTURE_COMMAND;
 import static org.eclipse.che.jdt.ls.extension.api.Commands.FIND_IMPLEMENTERS_COMMAND;
@@ -49,6 +53,7 @@ import static org.eclipse.che.jdt.ls.extension.api.Commands.GET_LIBRARY_ENTRY_CO
 import static org.eclipse.che.jdt.ls.extension.api.Commands.GET_OUTPUT_DIR_COMMAND;
 import static org.eclipse.che.jdt.ls.extension.api.Commands.GET_SOURCE_FOLDERS;
 import static org.eclipse.che.jdt.ls.extension.api.Commands.REIMPORT_MAVEN_PROJECTS_COMMAND;
+import static org.eclipse.che.jdt.ls.extension.api.Commands.RENAME_COMMAND;
 import static org.eclipse.che.jdt.ls.extension.api.Commands.RESOLVE_CLASSPATH_COMMAND;
 import static org.eclipse.che.jdt.ls.extension.api.Commands.TEST_DETECT_COMMAND;
 import static org.eclipse.che.jdt.ls.extension.api.Commands.UPDATE_PROJECT_CLASSPATH;
@@ -96,9 +101,15 @@ import org.eclipse.che.jdt.ls.extension.api.dto.Jar;
 import org.eclipse.che.jdt.ls.extension.api.dto.JarEntry;
 import org.eclipse.che.jdt.ls.extension.api.dto.JavaCoreOptions;
 import org.eclipse.che.jdt.ls.extension.api.dto.JobResult;
+import org.eclipse.che.jdt.ls.extension.api.dto.LinkedModeModel;
+import org.eclipse.che.jdt.ls.extension.api.dto.LinkedModelParams;
+import org.eclipse.che.jdt.ls.extension.api.dto.NameValidationStatus;
 import org.eclipse.che.jdt.ls.extension.api.dto.OrganizeImportParams;
 import org.eclipse.che.jdt.ls.extension.api.dto.OrganizeImportsResult;
 import org.eclipse.che.jdt.ls.extension.api.dto.ReImportMavenProjectsCommandParameters;
+import org.eclipse.che.jdt.ls.extension.api.dto.RenameSelectionParams;
+import org.eclipse.che.jdt.ls.extension.api.dto.RenameSettings;
+import org.eclipse.che.jdt.ls.extension.api.dto.RenameWizardType;
 import org.eclipse.che.jdt.ls.extension.api.dto.ResourceLocation;
 import org.eclipse.che.jdt.ls.extension.api.dto.TestFindParameters;
 import org.eclipse.che.jdt.ls.extension.api.dto.TestPosition;
@@ -113,6 +124,7 @@ import org.eclipse.che.plugin.java.languageserver.dto.DtoServerImpls.TestPositio
 import org.eclipse.lsp4j.ExecuteCommandParams;
 import org.eclipse.lsp4j.SymbolInformation;
 import org.eclipse.lsp4j.TextDocumentPositionParams;
+import org.eclipse.lsp4j.WorkspaceEdit;
 import org.eclipse.lsp4j.jsonrpc.json.adapters.CollectionTypeAdapterFactory;
 import org.eclipse.lsp4j.jsonrpc.json.adapters.EitherTypeAdapterFactory;
 import org.eclipse.lsp4j.jsonrpc.json.adapters.EnumTypeAdapterFactory;
@@ -255,6 +267,34 @@ public class JavaLanguageServerExtensionService {
         .paramsAsDto(JavaCoreOptions.class)
         .resultAsBoolean()
         .withFunction(this::updateJavaCoreOptions);
+
+    requestHandler
+        .newConfiguration()
+        .methodName(REFACTORING_RENAME)
+        .paramsAsDto(RenameSettings.class)
+        .resultAsDto(WorkspaceEdit.class)
+        .withFunction(this::rename);
+
+    requestHandler
+        .newConfiguration()
+        .methodName(REFACTORING_GET_RENAME_TYPE)
+        .paramsAsDto(RenameSelectionParams.class)
+        .resultAsDto(RenameWizardType.class)
+        .withFunction(this::getRenameType);
+
+    requestHandler
+        .newConfiguration()
+        .methodName(VALIDATE_RENAMED_NAME)
+        .paramsAsDto(RenameSelectionParams.class)
+        .resultAsDto(NameValidationStatus.class)
+        .withFunction(this::validateName);
+
+    requestHandler
+        .newConfiguration()
+        .methodName(GET_LINKED_MODEL)
+        .paramsAsDto(LinkedModelParams.class)
+        .resultAsDto(LinkedModeModel.class)
+        .withFunction(this::getLinkedModel);
   }
 
   /**
@@ -595,6 +635,46 @@ public class JavaLanguageServerExtensionService {
   private JarEntry getLibraryEntry(String resourceUri) {
     Type type = new TypeToken<JarEntry>() {}.getType();
     return doGetOne(GET_LIBRARY_ENTRY_COMMAND, singletonList(fixJdtUri(resourceUri)), type);
+  }
+
+  private WorkspaceEdit rename(RenameSettings renameSettings) {
+    Type type = new TypeToken<WorkspaceEdit>() {}.getType();
+    String uri = renameSettings.getRenameParams().getTextDocument().getUri();
+    renameSettings.getRenameParams().getTextDocument().setUri(prefixURI(uri));
+    WorkspaceEdit workspaceEdit = doGetOne(RENAME_COMMAND, singletonList(renameSettings), type);
+
+    return workspaceEdit;
+  }
+
+  private RenameWizardType getRenameType(RenameSelectionParams renameSelection) {
+    Type type = new TypeToken<RenameWizardType>() {}.getType();
+    String uri = renameSelection.getResourceUri();
+    renameSelection.setResourceUri(prefixURI(uri));
+    RenameWizardType renameWizardType =
+        doGetOne(Commands.GET_RENAME_TYPE_COMMAND, singletonList(renameSelection), type);
+
+    return renameWizardType;
+  }
+
+  private NameValidationStatus validateName(RenameSelectionParams renameSelectionParams) {
+    Type type = new TypeToken<NameValidationStatus>() {}.getType();
+    String uri = renameSelectionParams.getResourceUri();
+    renameSelectionParams.setResourceUri(prefixURI(uri));
+    NameValidationStatus nameValidationStatus =
+        doGetOne(
+            Commands.VALIDATE_RENAMED_NAME_COMMAND, singletonList(renameSelectionParams), type);
+
+    return nameValidationStatus;
+  }
+
+  private LinkedModeModel getLinkedModel(LinkedModelParams linkedModelParams) {
+    Type type = new TypeToken<LinkedModeModel>() {}.getType();
+    String uri = linkedModelParams.getUri();
+    linkedModelParams.setUri(prefixURI(uri));
+    LinkedModeModel linkedModel =
+        doGetOne(Commands.GET_LINKED_MODE_COMMAND, singletonList(linkedModelParams), type);
+
+    return linkedModel;
   }
 
   private List<String> executeFindTestsCommand(

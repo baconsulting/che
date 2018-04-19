@@ -13,26 +13,16 @@ package org.eclipse.che.ide.ext.java.client.refactoring.rename;
 import static org.eclipse.che.ide.api.editor.events.FileEvent.FileOperation.CLOSE;
 import static org.eclipse.che.ide.api.notification.StatusNotification.DisplayMode.FLOAT_MODE;
 import static org.eclipse.che.ide.api.notification.StatusNotification.Status.FAIL;
-import static org.eclipse.che.ide.ext.java.shared.dto.refactoring.CreateRenameRefactoring.RenameType.JAVA_ELEMENT;
-import static org.eclipse.che.ide.ext.java.shared.dto.refactoring.RefactoringStatus.ERROR;
-import static org.eclipse.che.ide.ext.java.shared.dto.refactoring.RefactoringStatus.FATAL;
-import static org.eclipse.che.ide.ext.java.shared.dto.refactoring.RefactoringStatus.INFO;
-import static org.eclipse.che.ide.ext.java.shared.dto.refactoring.RefactoringStatus.OK;
-import static org.eclipse.che.ide.ext.java.shared.dto.refactoring.RefactoringStatus.WARNING;
 
-import com.google.common.base.Optional;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import com.google.web.bindery.event.shared.EventBus;
 import java.util.ArrayList;
 import java.util.List;
-import javax.validation.constraints.NotNull;
 import org.eclipse.che.api.promises.client.Operation;
 import org.eclipse.che.api.promises.client.OperationException;
-import org.eclipse.che.api.promises.client.Promise;
 import org.eclipse.che.api.promises.client.PromiseError;
 import org.eclipse.che.ide.api.editor.EditorWithAutoSave;
-import org.eclipse.che.ide.api.editor.document.Document;
 import org.eclipse.che.ide.api.editor.events.FileEvent;
 import org.eclipse.che.ide.api.editor.events.FileEvent.FileEventHandler;
 import org.eclipse.che.ide.api.editor.link.HasLinkedMode;
@@ -41,29 +31,30 @@ import org.eclipse.che.ide.api.editor.link.LinkedModel;
 import org.eclipse.che.ide.api.editor.link.LinkedModelData;
 import org.eclipse.che.ide.api.editor.link.LinkedModelGroup;
 import org.eclipse.che.ide.api.editor.text.Position;
+import org.eclipse.che.ide.api.editor.text.TextPosition;
 import org.eclipse.che.ide.api.editor.texteditor.TextEditor;
 import org.eclipse.che.ide.api.editor.texteditor.UndoableEditor;
 import org.eclipse.che.ide.api.filewatcher.ClientServerEventService;
 import org.eclipse.che.ide.api.notification.NotificationManager;
-import org.eclipse.che.ide.api.resources.Project;
-import org.eclipse.che.ide.api.resources.Resource;
 import org.eclipse.che.ide.api.resources.VirtualFile;
 import org.eclipse.che.ide.dto.DtoFactory;
 import org.eclipse.che.ide.ext.java.client.JavaLocalizationConstant;
+import org.eclipse.che.ide.ext.java.client.refactoring.RefactorInfo;
 import org.eclipse.che.ide.ext.java.client.refactoring.RefactoringUpdater;
+import org.eclipse.che.ide.ext.java.client.refactoring.move.RefactoredItemType;
 import org.eclipse.che.ide.ext.java.client.refactoring.rename.wizard.RenamePresenter;
-import org.eclipse.che.ide.ext.java.client.refactoring.service.RefactoringServiceClient;
-import org.eclipse.che.ide.ext.java.client.util.JavaUtil;
-import org.eclipse.che.ide.ext.java.shared.dto.LinkedData;
-import org.eclipse.che.ide.ext.java.shared.dto.LinkedModeModel;
-import org.eclipse.che.ide.ext.java.shared.dto.LinkedPositionGroup;
-import org.eclipse.che.ide.ext.java.shared.dto.Region;
-import org.eclipse.che.ide.ext.java.shared.dto.refactoring.ChangeInfo;
-import org.eclipse.che.ide.ext.java.shared.dto.refactoring.CreateRenameRefactoring;
-import org.eclipse.che.ide.ext.java.shared.dto.refactoring.LinkedRenameRefactoringApply;
-import org.eclipse.che.ide.ext.java.shared.dto.refactoring.RefactoringResult;
-import org.eclipse.che.ide.ext.java.shared.dto.refactoring.RenameRefactoringSession;
+import org.eclipse.che.ide.ext.java.client.service.JavaLanguageExtensionServiceClient;
 import org.eclipse.che.ide.ui.dialogs.DialogFactory;
+import org.eclipse.che.jdt.ls.extension.api.dto.LinkedData;
+import org.eclipse.che.jdt.ls.extension.api.dto.LinkedModeModel;
+import org.eclipse.che.jdt.ls.extension.api.dto.LinkedModelParams;
+import org.eclipse.che.jdt.ls.extension.api.dto.LinkedPositionGroup;
+import org.eclipse.che.jdt.ls.extension.api.dto.Region;
+import org.eclipse.che.jdt.ls.extension.api.dto.RenameSettings;
+import org.eclipse.che.plugin.languageserver.ide.util.DtoBuildHelper;
+import org.eclipse.lsp4j.RenameParams;
+import org.eclipse.lsp4j.TextDocumentIdentifier;
+import org.eclipse.lsp4j.WorkspaceEdit;
 
 /**
  * Class for rename refactoring java classes
@@ -74,10 +65,11 @@ import org.eclipse.che.ide.ui.dialogs.DialogFactory;
 @Singleton
 public class JavaRefactoringRename implements FileEventHandler {
   private final RenamePresenter renamePresenter;
+  private DtoBuildHelper dtoBuildHelper;
   private final RefactoringUpdater refactoringUpdater;
   private final JavaLocalizationConstant locale;
-  private final RefactoringServiceClient refactoringServiceClient;
   private final DtoFactory dtoFactory;
+  private JavaLanguageExtensionServiceClient extensionServiceClient;
   private final ClientServerEventService clientServerEventService;
   private final DialogFactory dialogFactory;
   private final NotificationManager notificationManager;
@@ -87,24 +79,27 @@ public class JavaRefactoringRename implements FileEventHandler {
   private LinkedMode mode;
   private HasLinkedMode linkedEditor;
   private String newName;
+  private TextPosition cursorPosition;
 
   @Inject
   public JavaRefactoringRename(
       RenamePresenter renamePresenter,
+      DtoBuildHelper dtoBuildHelper,
       RefactoringUpdater refactoringUpdater,
       JavaLocalizationConstant locale,
-      RefactoringServiceClient refactoringServiceClient,
+      JavaLanguageExtensionServiceClient extensionServiceClient,
       ClientServerEventService clientServerEventService,
       DtoFactory dtoFactory,
       EventBus eventBus,
       DialogFactory dialogFactory,
       NotificationManager notificationManager) {
     this.renamePresenter = renamePresenter;
+    this.dtoBuildHelper = dtoBuildHelper;
     this.refactoringUpdater = refactoringUpdater;
     this.locale = locale;
+    this.extensionServiceClient = extensionServiceClient;
     this.clientServerEventService = clientServerEventService;
     this.dialogFactory = dialogFactory;
-    this.refactoringServiceClient = refactoringServiceClient;
     this.dtoFactory = dtoFactory;
     this.notificationManager = notificationManager;
 
@@ -124,43 +119,19 @@ public class JavaRefactoringRename implements FileEventHandler {
     }
 
     if (isActiveLinkedEditor) {
-      createRenameSession();
+      if (mode != null) {
+        mode.exitLinkedMode(false);
+      }
+      renamePresenter.show(RefactorInfo.of(RefactoredItemType.JAVA_ELEMENT, null));
+      isActiveLinkedEditor = false;
     } else {
+      isActiveLinkedEditor = true;
       textEditor = textEditorPresenter;
-
-      createLinkedRenameSession();
+      createLinkedRename();
     }
-
-    isActiveLinkedEditor = !isActiveLinkedEditor;
 
     linkedEditor = (HasLinkedMode) textEditorPresenter;
     textEditorPresenter.setFocus();
-  }
-
-  private void createRenameSession() {
-    final CreateRenameRefactoring refactoringSession =
-        createRenameRefactoringDto(textEditor, false);
-
-    Promise<RenameRefactoringSession> createRenamePromise =
-        refactoringServiceClient.createRenameRefactoring(refactoringSession);
-    createRenamePromise
-        .then(
-            new Operation<RenameRefactoringSession>() {
-              @Override
-              public void apply(RenameRefactoringSession session) throws OperationException {
-                renamePresenter.show(session);
-                if (mode != null) {
-                  mode.exitLinkedMode(false);
-                }
-              }
-            })
-        .catchError(
-            new Operation<PromiseError>() {
-              @Override
-              public void apply(PromiseError arg) throws OperationException {
-                showError();
-              }
-            });
   }
 
   private void showError() {
@@ -172,31 +143,32 @@ public class JavaRefactoringRename implements FileEventHandler {
     }
   }
 
-  private void createLinkedRenameSession() {
-    final CreateRenameRefactoring refactoringSession = createRenameRefactoringDto(textEditor, true);
+  private void createLinkedRename() {
+    cursorPosition = textEditor.getCursorPosition();
+    LinkedModelParams params = dtoFactory.createDto(LinkedModelParams.class);
+    params.setUri(textEditor.getDocument().getFile().getLocation().toString());
+    params.setOffset(textEditor.getCursorOffset());
 
-    Promise<RenameRefactoringSession> createRenamePromise =
-        refactoringServiceClient.createRenameRefactoring(refactoringSession);
-    createRenamePromise
+    extensionServiceClient
+        .getLinkedModeModel(params)
         .then(
-            new Operation<RenameRefactoringSession>() {
-              @Override
-              public void apply(RenameRefactoringSession session) throws OperationException {
-                clientServerEventService
-                    .sendFileTrackingSuspendEvent()
-                    .then(
-                        success -> {
-                          activateLinkedModeIntoEditor(session, textEditor.getDocument());
-                        });
-              }
+            linkedModeModel -> {
+              clientServerEventService
+                  .sendFileTrackingSuspendEvent()
+                  .then(
+                      success -> {
+                        if (linkedModeModel == null) {
+                          showError();
+                          isActiveLinkedEditor = false;
+                          return;
+                        }
+                        activateLinkedModeIntoEditor(linkedModeModel);
+                      });
             })
         .catchError(
-            new Operation<PromiseError>() {
-              @Override
-              public void apply(PromiseError arg) throws OperationException {
-                isActiveLinkedEditor = false;
-                showError();
-              }
+            arg -> {
+              isActiveLinkedEditor = false;
+              showError();
             });
   }
 
@@ -215,15 +187,13 @@ public class JavaRefactoringRename implements FileEventHandler {
     return isActiveLinkedEditor;
   }
 
-  private void activateLinkedModeIntoEditor(
-      final RenameRefactoringSession session, final Document document) {
+  private void activateLinkedModeIntoEditor(LinkedModeModel linkedModeModel) {
     mode = linkedEditor.getLinkedMode();
     LinkedModel model = linkedEditor.createLinkedModel();
-    LinkedModeModel linkedModeModel = session.getLinkedModeModel();
     List<LinkedModelGroup> groups = new ArrayList<>();
     for (LinkedPositionGroup positionGroup : linkedModeModel.getGroups()) {
       LinkedModelGroup group = linkedEditor.createLinkedGroup();
-      LinkedData data = positionGroup.getData();
+      LinkedData data = positionGroup.getLinkedData();
       if (data != null) {
         LinkedModelData modelData = linkedEditor.createLinkedModelData();
         modelData.setType("link");
@@ -250,11 +220,12 @@ public class JavaRefactoringRename implements FileEventHandler {
             try {
               if (successful) {
                 isSuccessful = true;
-                newName = document.getContentRange(start, end - start);
-                performRename(session);
+                newName = textEditor.getDocument().getContentRange(start, end - start);
+                performRename(newName);
               }
             } finally {
               mode.removeListener(this);
+
               isActiveLinkedEditor = false;
 
               boolean isNameChanged = start >= 0 && end >= 0;
@@ -275,80 +246,44 @@ public class JavaRefactoringRename implements FileEventHandler {
         });
   }
 
-  private void performRename(RenameRefactoringSession session) {
-    final LinkedRenameRefactoringApply dto =
-        createLinkedRenameRefactoringApplyDto(newName, session.getSessionId());
-    Promise<RefactoringResult> applyModelPromise =
-        refactoringServiceClient.applyLinkedModeRename(dto);
-    applyModelPromise
+  private void performRename(String newName) {
+    RenameSettings settings = dtoFactory.createDto(RenameSettings.class);
+
+    RenameParams renameParams = dtoFactory.createDto(RenameParams.class);
+    renameParams.setNewName(newName);
+    VirtualFile file = textEditor.getEditorInput().getFile();
+    TextDocumentIdentifier textDocumentIdentifier = dtoBuildHelper.createTDI(file);
+    renameParams.setTextDocument(textDocumentIdentifier);
+
+    org.eclipse.lsp4j.Position position = dtoFactory.createDto(org.eclipse.lsp4j.Position.class);
+    position.setCharacter(cursorPosition.getCharacter());
+    position.setLine(cursorPosition.getLine());
+    renameParams.setPosition(position);
+
+    settings.setUpdateReferences(true);
+    settings.setRenameParams(renameParams);
+
+    extensionServiceClient
+        .rename(settings)
         .then(
-            new Operation<RefactoringResult>() {
+            new Operation<WorkspaceEdit>() {
               @Override
-              public void apply(RefactoringResult result) throws OperationException {
-                switch (result.getSeverity()) {
-                  case OK:
-                  case INFO:
-                    List<ChangeInfo> changes = result.getChanges();
-                    refactoringUpdater
-                        .updateAfterRefactoring(changes)
-                        .then(
-                            arg -> {
-                              final VirtualFile file = textEditor.getDocument().getFile();
-
-                              if (file instanceof Resource) {
-                                final Optional<Project> project =
-                                    ((Resource) file).getRelatedProject();
-
-                                refactoringServiceClient.reindexProject(
-                                    project.get().getLocation().toString());
-                              }
-
-                              enableAutoSave();
-                              refactoringUpdater
-                                  .handleMovingFiles(changes)
-                                  .then(clientServerEventService.sendFileTrackingResumeEvent());
-                            });
-
-                    break;
-                  case WARNING:
-                  case ERROR:
-                    enableAutoSave();
-
-                    undoChanges();
-
-                    showWarningDialog();
-                    break;
-                  case FATAL:
-                    undoChanges();
-
-                    clientServerEventService.sendFileTrackingResumeEvent();
-
-                    notificationManager.notify(
-                        locale.failedToRename(),
-                        result.getEntries().get(0).getMessage(),
-                        FAIL,
-                        FLOAT_MODE);
-                    break;
-                  default:
-                    break;
-                }
+              public void apply(WorkspaceEdit edits) throws OperationException {
+                enableAutoSave();
+                // TODO refactoringUpdater.updateAfterRefactoring(changes)
+                clientServerEventService.sendFileTrackingResumeEvent();
               }
             })
         .catchError(
             new Operation<PromiseError>() {
               @Override
-              public void apply(PromiseError arg) throws OperationException {
+              public void apply(PromiseError error) throws OperationException {
                 undoChanges();
-
-                clientServerEventService
-                    .sendFileTrackingResumeEvent()
-                    .then(
-                        success -> {
-                          enableAutoSave();
-                        });
-
+                enableAutoSave();
+                // TODO
+                clientServerEventService.sendFileTrackingResumeEvent();
                 notificationManager.notify(
-                    locale.failedToRename(), arg.getMessage(), FAIL, FLOAT_MODE);
+                    locale.failedToRename(), error.getMessage(), FAIL, FLOAT_MODE);
               }
             });
   }
@@ -369,55 +304,5 @@ public class JavaRefactoringRename implements FileEventHandler {
     if (linkedEditor instanceof UndoableEditor) {
       ((UndoableEditor) linkedEditor).getUndoRedo().undo();
     }
-  }
-
-  private void showWarningDialog() {
-    dialogFactory
-        .createConfirmDialog(
-            locale.warningOperationTitle(),
-            locale.renameWithWarnings(),
-            locale.showRenameWizard(),
-            locale.buttonCancel(),
-            () -> {
-              isActiveLinkedEditor = true;
-
-              refactor(textEditor);
-
-              isActiveLinkedEditor = false;
-            },
-            clientServerEventService::sendFileTrackingResumeEvent)
-        .show();
-  }
-
-  @NotNull
-  private CreateRenameRefactoring createRenameRefactoringDto(
-      TextEditor editor, boolean isActiveLinkedMode) {
-    CreateRenameRefactoring dto = dtoFactory.createDto(CreateRenameRefactoring.class);
-
-    dto.setOffset(editor.getCursorOffset());
-    dto.setRefactorLightweight(isActiveLinkedMode);
-
-    final VirtualFile file = editor.getEditorInput().getFile();
-
-    dto.setPath(JavaUtil.resolveFQN(file));
-
-    if (file instanceof Resource) {
-      final Optional<Project> project = ((Resource) file).getRelatedProject();
-
-      dto.setProjectPath(project.get().getLocation().toString());
-    }
-
-    dto.setType(JAVA_ELEMENT);
-
-    return dto;
-  }
-
-  @NotNull
-  private LinkedRenameRefactoringApply createLinkedRenameRefactoringApplyDto(
-      String newName, String sessionId) {
-    LinkedRenameRefactoringApply dto = dtoFactory.createDto(LinkedRenameRefactoringApply.class);
-    dto.setNewName(newName);
-    dto.setSessionId(sessionId);
-    return dto;
   }
 }

@@ -21,14 +21,18 @@ import static org.eclipse.che.ide.ext.java.shared.Constants.EXTERNAL_LIBRARY_CHI
 import static org.eclipse.che.ide.ext.java.shared.Constants.EXTERNAL_LIBRARY_ENTRY;
 import static org.eclipse.che.ide.ext.java.shared.Constants.FILE_STRUCTURE;
 import static org.eclipse.che.ide.ext.java.shared.Constants.GET_JAVA_CORE_OPTIONS;
+import static org.eclipse.che.ide.ext.java.shared.Constants.GET_LINKED_MODEL;
 import static org.eclipse.che.ide.ext.java.shared.Constants.IMPLEMENTERS;
 import static org.eclipse.che.ide.ext.java.shared.Constants.ORGANIZE_IMPORTS;
 import static org.eclipse.che.ide.ext.java.shared.Constants.RECOMPUTE_POM_DIAGNOSTICS;
+import static org.eclipse.che.ide.ext.java.shared.Constants.REFACTORING_GET_RENAME_TYPE;
+import static org.eclipse.che.ide.ext.java.shared.Constants.REFACTORING_RENAME;
 import static org.eclipse.che.ide.ext.java.shared.Constants.REIMPORT_MAVEN_PROJECTS;
 import static org.eclipse.che.ide.ext.java.shared.Constants.REIMPORT_MAVEN_PROJECTS_REQUEST_TIMEOUT;
 import static org.eclipse.che.ide.ext.java.shared.Constants.REQUEST_TIMEOUT;
 import static org.eclipse.che.ide.ext.java.shared.Constants.UPDATE_JAVA_CORE_OPTIONS;
 import static org.eclipse.che.ide.ext.java.shared.Constants.USAGES;
+import static org.eclipse.che.ide.ext.java.shared.Constants.VALIDATE_RENAMED_NAME;
 
 import com.google.gwt.jsonp.client.TimeoutException;
 import com.google.inject.Inject;
@@ -51,9 +55,15 @@ import org.eclipse.che.jdt.ls.extension.api.dto.ImplementersResponse;
 import org.eclipse.che.jdt.ls.extension.api.dto.Jar;
 import org.eclipse.che.jdt.ls.extension.api.dto.JarEntry;
 import org.eclipse.che.jdt.ls.extension.api.dto.JavaCoreOptions;
+import org.eclipse.che.jdt.ls.extension.api.dto.LinkedModeModel;
+import org.eclipse.che.jdt.ls.extension.api.dto.LinkedModelParams;
+import org.eclipse.che.jdt.ls.extension.api.dto.NameValidationStatus;
 import org.eclipse.che.jdt.ls.extension.api.dto.OrganizeImportParams;
 import org.eclipse.che.jdt.ls.extension.api.dto.OrganizeImportsResult;
 import org.eclipse.che.jdt.ls.extension.api.dto.ReImportMavenProjectsCommandParameters;
+import org.eclipse.che.jdt.ls.extension.api.dto.RenameSelectionParams;
+import org.eclipse.che.jdt.ls.extension.api.dto.RenameSettings;
+import org.eclipse.che.jdt.ls.extension.api.dto.RenameWizardType;
 import org.eclipse.che.jdt.ls.extension.api.dto.UsagesResponse;
 import org.eclipse.che.plugin.languageserver.ide.service.ServiceUtil;
 import org.eclipse.lsp4j.TextDocumentPositionParams;
@@ -272,6 +282,66 @@ public class JavaLanguageExtensionServiceClient {
                 .methodName(EXTERNAL_LIBRARY_ENTRY)
                 .paramsAsString(resourceUri)
                 .sendAndReceiveResultAsDto(JarEntry.class, REQUEST_TIMEOUT)
+                .onSuccess(resolve::apply)
+                .onTimeout(() -> onTimeout(reject))
+                .onFailure(error -> reject.apply(ServiceUtil.getPromiseError(error))));
+  }
+
+  /** Rename refactoring. */
+  public Promise<WorkspaceEdit> rename(RenameSettings renameSettings) {
+    return Promises.create(
+        (resolve, reject) ->
+            requestTransmitter
+                .newRequest()
+                .endpointId(WS_AGENT_JSON_RPC_ENDPOINT_ID)
+                .methodName(REFACTORING_RENAME)
+                .paramsAsDto(renameSettings)
+                .sendAndReceiveResultAsDto(WorkspaceEdit.class, REQUEST_TIMEOUT)
+                .onSuccess(resolve::apply)
+                .onTimeout(() -> onTimeout(reject))
+                .onFailure(error -> reject.apply(ServiceUtil.getPromiseError(error))));
+  }
+
+  /** Returns type of Rename refactoring. */
+  public Promise<RenameWizardType> getRenameType(RenameSelectionParams renameSelection) {
+    return Promises.create(
+        (resolve, reject) ->
+            requestTransmitter
+                .newRequest()
+                .endpointId(WS_AGENT_JSON_RPC_ENDPOINT_ID)
+                .methodName(REFACTORING_GET_RENAME_TYPE)
+                .paramsAsDto(renameSelection)
+                .sendAndReceiveResultAsDto(RenameWizardType.class, REQUEST_TIMEOUT)
+                .onSuccess(resolve::apply)
+                .onTimeout(() -> onTimeout(reject))
+                .onFailure(error -> reject.apply(ServiceUtil.getPromiseError(error))));
+  }
+
+  /** Validates new name. */
+  public Promise<NameValidationStatus> validateRenamedName(RenameSelectionParams renameSelection) {
+    return Promises.create(
+        (resolve, reject) ->
+            requestTransmitter
+                .newRequest()
+                .endpointId(WS_AGENT_JSON_RPC_ENDPOINT_ID)
+                .methodName(VALIDATE_RENAMED_NAME)
+                .paramsAsDto(renameSelection)
+                .sendAndReceiveResultAsDto(NameValidationStatus.class, REQUEST_TIMEOUT)
+                .onSuccess(resolve::apply)
+                .onTimeout(() -> onTimeout(reject))
+                .onFailure(error -> reject.apply(ServiceUtil.getPromiseError(error))));
+  }
+
+  /** Returns linked model. */
+  public Promise<LinkedModeModel> getLinkedModeModel(LinkedModelParams linkedModelParams) {
+    return Promises.create(
+        (resolve, reject) ->
+            requestTransmitter
+                .newRequest()
+                .endpointId(WS_AGENT_JSON_RPC_ENDPOINT_ID)
+                .methodName(GET_LINKED_MODEL)
+                .paramsAsDto(linkedModelParams)
+                .sendAndReceiveResultAsDto(LinkedModeModel.class, REQUEST_TIMEOUT)
                 .onSuccess(resolve::apply)
                 .onTimeout(() -> onTimeout(reject))
                 .onFailure(error -> reject.apply(ServiceUtil.getPromiseError(error))));
