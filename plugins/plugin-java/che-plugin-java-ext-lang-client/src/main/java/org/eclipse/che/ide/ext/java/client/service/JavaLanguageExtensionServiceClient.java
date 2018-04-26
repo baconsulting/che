@@ -47,6 +47,7 @@ import org.eclipse.che.api.promises.client.js.Promises;
 import org.eclipse.che.api.promises.client.js.RejectFunction;
 import org.eclipse.che.ide.api.app.AppContext;
 import org.eclipse.che.ide.api.workspace.WorkspaceReadyEvent;
+import org.eclipse.che.jdt.ls.extension.api.dto.CheWorkspaceEdit;
 import org.eclipse.che.jdt.ls.extension.api.dto.ClasspathEntry;
 import org.eclipse.che.jdt.ls.extension.api.dto.ExtendedSymbolInformation;
 import org.eclipse.che.jdt.ls.extension.api.dto.ExternalLibrariesParameters;
@@ -288,7 +289,7 @@ public class JavaLanguageExtensionServiceClient {
   }
 
   /** Rename refactoring. */
-  public Promise<WorkspaceEdit> rename(RenameSettings renameSettings) {
+  public Promise<CheWorkspaceEdit> rename(RenameSettings renameSettings) {
     return Promises.create(
         (resolve, reject) ->
             requestTransmitter
@@ -296,7 +297,7 @@ public class JavaLanguageExtensionServiceClient {
                 .endpointId(WS_AGENT_JSON_RPC_ENDPOINT_ID)
                 .methodName(REFACTORING_RENAME)
                 .paramsAsDto(renameSettings)
-                .sendAndReceiveResultAsDto(WorkspaceEdit.class, REQUEST_TIMEOUT)
+                .sendAndReceiveResultAsDto(CheWorkspaceEdit.class, REQUEST_TIMEOUT)
                 .onSuccess(resolve::apply)
                 .onTimeout(() -> onTimeout(reject))
                 .onFailure(error -> reject.apply(ServiceUtil.getPromiseError(error))));
@@ -350,7 +351,7 @@ public class JavaLanguageExtensionServiceClient {
   /**
    * Organize imports in a file or in all files in the specific directory.
    *
-   * @param path the path to the file or to the directory
+   * @param organizeImports parameters of the import operation
    * @return {@link WorkspaceEdit} changes to apply
    */
   public Promise<OrganizeImportsResult> organizeImports(OrganizeImportParams organizeImports) {

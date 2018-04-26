@@ -54,7 +54,6 @@ import org.eclipse.che.jdt.ls.extension.api.dto.RenameSettings;
 import org.eclipse.che.plugin.languageserver.ide.util.DtoBuildHelper;
 import org.eclipse.lsp4j.RenameParams;
 import org.eclipse.lsp4j.TextDocumentIdentifier;
-import org.eclipse.lsp4j.WorkspaceEdit;
 
 /**
  * Class for rename refactoring java classes
@@ -266,13 +265,10 @@ public class JavaRefactoringRename implements FileEventHandler {
     extensionServiceClient
         .rename(settings)
         .then(
-            new Operation<WorkspaceEdit>() {
-              @Override
-              public void apply(WorkspaceEdit edits) throws OperationException {
-                enableAutoSave();
-                // TODO refactoringUpdater.updateAfterRefactoring(changes)
-                clientServerEventService.sendFileTrackingResumeEvent();
-              }
+            edits -> {
+              enableAutoSave();
+              // TODO refactoringUpdater.updateAfterRefactoring(changes)
+              clientServerEventService.sendFileTrackingResumeEvent();
             })
         .catchError(
             new Operation<PromiseError>() {

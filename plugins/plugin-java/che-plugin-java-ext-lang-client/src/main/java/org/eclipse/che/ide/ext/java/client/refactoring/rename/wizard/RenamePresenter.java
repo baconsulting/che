@@ -12,8 +12,6 @@ package org.eclipse.che.ide.ext.java.client.refactoring.rename.wizard;
 
 import static org.eclipse.che.ide.api.notification.StatusNotification.DisplayMode.FLOAT_MODE;
 import static org.eclipse.che.ide.api.notification.StatusNotification.Status.FAIL;
-import static org.eclipse.che.ide.ext.java.shared.dto.refactoring.CreateRenameRefactoring.RenameType.COMPILATION_UNIT;
-import static org.eclipse.che.ide.ext.java.shared.dto.refactoring.CreateRenameRefactoring.RenameType.PACKAGE;
 
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
@@ -41,6 +39,7 @@ import org.eclipse.che.ide.ext.java.client.service.JavaLanguageExtensionServiceC
 import org.eclipse.che.ide.ext.java.shared.dto.refactoring.ChangeInfo;
 import org.eclipse.che.ide.ui.dialogs.DialogFactory;
 import org.eclipse.che.jdt.ls.extension.api.RenameType;
+import org.eclipse.che.jdt.ls.extension.api.dto.CheWorkspaceEdit;
 import org.eclipse.che.jdt.ls.extension.api.dto.NameValidationStatus;
 import org.eclipse.che.jdt.ls.extension.api.dto.RenameSelectionParams;
 import org.eclipse.che.jdt.ls.extension.api.dto.RenameSettings;
@@ -48,7 +47,6 @@ import org.eclipse.che.jdt.ls.extension.api.dto.RenameWizardType;
 import org.eclipse.che.plugin.languageserver.ide.util.DtoBuildHelper;
 import org.eclipse.lsp4j.RenameParams;
 import org.eclipse.lsp4j.TextDocumentIdentifier;
-import org.eclipse.lsp4j.WorkspaceEdit;
 
 /**
  * The class that manages Rename panel widget.
@@ -210,7 +208,7 @@ public class RenamePresenter implements ActionDelegate {
   /** {@inheritDoc} */
   @Override
   public void onAcceptButtonClicked() {
-    applyChanges();
+    getChanges().then(this::applyRefactoring);
   }
 
   /** {@inheritDoc} */
@@ -275,35 +273,15 @@ public class RenamePresenter implements ActionDelegate {
   }
 
   private void showPreview() {
-    //    RefactoringSession session = dtoFactory.createDto(RefactoringSession.class);
-    //    session.setSessionId(renameRefactoringSession.getSessionId());
-    //
-    //    prepareRenameChanges(session)
-    //        .then(
-    //            new Operation<ChangeCreationResult>() {
-    //              @Override
-    //              public void apply(ChangeCreationResult arg) throws OperationException {
-    //                if (arg.isCanShowPreviewPage() || arg.getStatus().getSeverity() <= 3) {
-    //                  previewPresenter.show(renameRefactoringSession.getSessionId(),
-    // refactorInfo);
-    //                  previewPresenter.setTitle(locale.renameItemTitle());
-    //                  view.close();
-    //                } else {
-    //                  view.showErrorMessage(arg.getStatus());
-    //                }
-    //              }
-    //            })
-    //        .catchError(
-    //            new Operation<PromiseError>() {
-    //              @Override
-    //              public void apply(PromiseError arg) throws OperationException {
-    //                notificationManager.notify(
-    //                    locale.failedToRename(), arg.getMessage(), FAIL, FLOAT_MODE);
-    //              }
-    //            });
+    getChanges()
+        .then(
+            workspaceEdit -> {
+              previewPresenter.show(workspaceEdit);
+              previewPresenter.setTitle(locale.renameItemTitle());
+            });
   }
 
-  private void applyChanges() {
+  private Promise<CheWorkspaceEdit> getChanges() {
     RenameSettings renameSettings = createRenameSettings();
     RenameParams renameParams = dtoFactory.createDto(RenameParams.class);
     renameParams.setNewName(view.getNewName());
@@ -320,9 +298,8 @@ public class RenamePresenter implements ActionDelegate {
 
     renameSettings.setRenameParams(renameParams);
 
-    extensionServiceClient
+    return extensionServiceClient
         .rename(renameSettings)
-        .then(this::applyRefactoring)
         .catchError(
             arg -> {
               notificationManager.notify(
@@ -330,7 +307,7 @@ public class RenamePresenter implements ActionDelegate {
             });
   }
 
-  private void applyRefactoring(WorkspaceEdit workspaceEdit) {
+  private void applyRefactoring(CheWorkspaceEdit workspaceEdit) {
     //    refactorService
     //        .applyRefactoring(session)
     //        .then(

@@ -92,6 +92,7 @@ import org.eclipse.che.api.project.server.ProjectManager;
 import org.eclipse.che.api.project.server.notification.ProjectUpdatedEvent;
 import org.eclipse.che.jdt.ls.extension.api.Commands;
 import org.eclipse.che.jdt.ls.extension.api.Severity;
+import org.eclipse.che.jdt.ls.extension.api.dto.CheWorkspaceEdit;
 import org.eclipse.che.jdt.ls.extension.api.dto.ClasspathEntry;
 import org.eclipse.che.jdt.ls.extension.api.dto.ExtendedSymbolInformation;
 import org.eclipse.che.jdt.ls.extension.api.dto.ExternalLibrariesParameters;
@@ -124,7 +125,6 @@ import org.eclipse.che.plugin.java.languageserver.dto.DtoServerImpls.TestPositio
 import org.eclipse.lsp4j.ExecuteCommandParams;
 import org.eclipse.lsp4j.SymbolInformation;
 import org.eclipse.lsp4j.TextDocumentPositionParams;
-import org.eclipse.lsp4j.WorkspaceEdit;
 import org.eclipse.lsp4j.jsonrpc.json.adapters.CollectionTypeAdapterFactory;
 import org.eclipse.lsp4j.jsonrpc.json.adapters.EitherTypeAdapterFactory;
 import org.eclipse.lsp4j.jsonrpc.json.adapters.EnumTypeAdapterFactory;
@@ -272,7 +272,7 @@ public class JavaLanguageServerExtensionService {
         .newConfiguration()
         .methodName(REFACTORING_RENAME)
         .paramsAsDto(RenameSettings.class)
-        .resultAsDto(WorkspaceEdit.class)
+        .resultAsDto(CheWorkspaceEdit.class)
         .withFunction(this::rename);
 
     requestHandler
@@ -637,44 +637,37 @@ public class JavaLanguageServerExtensionService {
     return doGetOne(GET_LIBRARY_ENTRY_COMMAND, singletonList(fixJdtUri(resourceUri)), type);
   }
 
-  private WorkspaceEdit rename(RenameSettings renameSettings) {
-    Type type = new TypeToken<WorkspaceEdit>() {}.getType();
+  private CheWorkspaceEdit rename(RenameSettings renameSettings) {
+    Type type = new TypeToken<CheWorkspaceEdit>() {}.getType();
     String uri = renameSettings.getRenameParams().getTextDocument().getUri();
     renameSettings.getRenameParams().getTextDocument().setUri(prefixURI(uri));
-    WorkspaceEdit workspaceEdit = doGetOne(RENAME_COMMAND, singletonList(renameSettings), type);
 
-    return workspaceEdit;
+    return doGetOne(RENAME_COMMAND, singletonList(renameSettings), type);
   }
 
   private RenameWizardType getRenameType(RenameSelectionParams renameSelection) {
     Type type = new TypeToken<RenameWizardType>() {}.getType();
     String uri = renameSelection.getResourceUri();
     renameSelection.setResourceUri(prefixURI(uri));
-    RenameWizardType renameWizardType =
-        doGetOne(Commands.GET_RENAME_TYPE_COMMAND, singletonList(renameSelection), type);
 
-    return renameWizardType;
+    return doGetOne(Commands.GET_RENAME_TYPE_COMMAND, singletonList(renameSelection), type);
   }
 
   private NameValidationStatus validateName(RenameSelectionParams renameSelectionParams) {
     Type type = new TypeToken<NameValidationStatus>() {}.getType();
     String uri = renameSelectionParams.getResourceUri();
     renameSelectionParams.setResourceUri(prefixURI(uri));
-    NameValidationStatus nameValidationStatus =
-        doGetOne(
-            Commands.VALIDATE_RENAMED_NAME_COMMAND, singletonList(renameSelectionParams), type);
 
-    return nameValidationStatus;
+    return doGetOne(
+        Commands.VALIDATE_RENAMED_NAME_COMMAND, singletonList(renameSelectionParams), type);
   }
 
   private LinkedModeModel getLinkedModel(LinkedModelParams linkedModelParams) {
     Type type = new TypeToken<LinkedModeModel>() {}.getType();
     String uri = linkedModelParams.getUri();
     linkedModelParams.setUri(prefixURI(uri));
-    LinkedModeModel linkedModel =
-        doGetOne(Commands.GET_LINKED_MODE_COMMAND, singletonList(linkedModelParams), type);
 
-    return linkedModel;
+    return doGetOne(Commands.GET_LINKED_MODE_COMMAND, singletonList(linkedModelParams), type);
   }
 
   private List<String> executeFindTestsCommand(
