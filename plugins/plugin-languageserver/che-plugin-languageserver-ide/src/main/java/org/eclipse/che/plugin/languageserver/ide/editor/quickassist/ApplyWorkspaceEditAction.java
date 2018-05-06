@@ -10,7 +10,11 @@
  */
 package org.eclipse.che.plugin.languageserver.ide.editor.quickassist;
 
+import static com.google.common.base.Strings.isNullOrEmpty;
+
+import com.google.gwt.user.client.rpc.AsyncCallback;
 import com.google.inject.Inject;
+import com.google.web.bindery.event.shared.EventBus;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -31,9 +35,11 @@ import org.eclipse.che.api.promises.client.js.RejectFunction;
 import org.eclipse.che.api.promises.client.js.ResolveFunction;
 import org.eclipse.che.ide.api.action.ActionEvent;
 import org.eclipse.che.ide.api.action.BaseAction;
+import org.eclipse.che.ide.api.app.AppContext;
 import org.eclipse.che.ide.api.editor.EditorAgent;
 import org.eclipse.che.ide.api.editor.EditorPartPresenter;
 import org.eclipse.che.ide.api.editor.document.Document;
+import org.eclipse.che.ide.api.editor.events.FileEvent;
 import org.eclipse.che.ide.api.editor.texteditor.HandlesUndoRedo;
 import org.eclipse.che.ide.api.editor.texteditor.TextEditor;
 import org.eclipse.che.ide.api.notification.Notification;
@@ -41,16 +47,28 @@ import org.eclipse.che.ide.api.notification.NotificationManager;
 import org.eclipse.che.ide.api.notification.StatusNotification;
 import org.eclipse.che.ide.api.notification.StatusNotification.DisplayMode;
 import org.eclipse.che.ide.api.notification.StatusNotification.Status;
+import org.eclipse.che.ide.api.resources.Container;
+import org.eclipse.che.ide.api.resources.Resource;
+import org.eclipse.che.ide.api.resources.VirtualFile;
 import org.eclipse.che.ide.dto.DtoFactory;
+import org.eclipse.che.ide.project.ProjectServiceClient;
+import org.eclipse.che.ide.resource.Path;
+import org.eclipse.che.ide.rest.UrlBuilder;
 import org.eclipse.che.ide.util.loging.Log;
 import org.eclipse.che.plugin.languageserver.ide.LanguageServerLocalization;
+import org.eclipse.che.plugin.languageserver.ide.service.TextDocumentServiceClient;
 import org.eclipse.che.plugin.languageserver.ide.service.WorkspaceServiceClient;
+import org.eclipse.che.plugin.languageserver.ide.util.DtoBuildHelper;
 import org.eclipse.che.plugin.languageserver.ide.util.PromiseHelper;
+import org.eclipse.lsp4j.DidCloseTextDocumentParams;
 import org.eclipse.lsp4j.Position;
 import org.eclipse.lsp4j.Range;
+import org.eclipse.lsp4j.ResourceChange;
 import org.eclipse.lsp4j.TextDocumentEdit;
+import org.eclipse.lsp4j.TextDocumentIdentifier;
 import org.eclipse.lsp4j.TextEdit;
 import org.eclipse.lsp4j.WorkspaceEdit;
+import org.eclipse.lsp4j.jsonrpc.messages.Either;
 
 @Singleton
 public class ApplyWorkspaceEditAction extends BaseAction {
@@ -59,8 +77,13 @@ public class ApplyWorkspaceEditAction extends BaseAction {
 
   private EditorAgent editorAgent;
   private DtoFactory dtoFactory;
+  private DtoBuildHelper dtoHelper;
+  private AppContext appContext;
   private WorkspaceServiceClient workspaceService;
+  private ProjectServiceClient projectService;
+  private EventBus eventBus;
   private PromiseHelper promiseHelper;
+  private TextDocumentServiceClient textDocumentService;
   private LanguageServerLocalization localization;
   private NotificationManager notificationManager;
   private PromiseProvider promiseProvider;
@@ -69,15 +92,25 @@ public class ApplyWorkspaceEditAction extends BaseAction {
   public ApplyWorkspaceEditAction(
       EditorAgent editorAgent,
       DtoFactory dtoFactory,
+      DtoBuildHelper dtoHelper,
+      AppContext appContext,
       WorkspaceServiceClient workspaceService,
+      ProjectServiceClient projectService,
+      EventBus eventBus,
       PromiseHelper promiseHelper,
+      TextDocumentServiceClient textDocumentService,
       LanguageServerLocalization localization,
       NotificationManager notificationManager,
       PromiseProvider promiseProvider) {
     this.editorAgent = editorAgent;
     this.dtoFactory = dtoFactory;
+    this.dtoHelper = dtoHelper;
+    this.appContext = appContext;
     this.workspaceService = workspaceService;
+    this.projectService = projectService;
+    this.eventBus = eventBus;
     this.promiseHelper = promiseHelper;
+    this.textDocumentService = textDocumentService;
     this.localization = localization;
     this.notificationManager = notificationManager;
     this.promiseProvider = promiseProvider;
@@ -122,6 +155,8 @@ public class ApplyWorkspaceEditAction extends BaseAction {
 
     done.then(
             (Void v) -> {
+              applyResourceChanges(notification, edit);
+
               Log.debug(getClass(), "done applying changes");
               notification.setStatus(Status.SUCCESS);
               notification.setContent(localization.applyWorkspaceActionNotificationDone());
@@ -145,6 +180,136 @@ public class ApplyWorkspaceEditAction extends BaseAction {
                             localization.applyWorkspaceActionNotificationUndoFailed());
                       });
             });
+  }
+
+  private void applyResourceChanges(Notification notification, WorkspaceEdit edit) {
+    List<Either<ResourceChange, TextDocumentEdit>> resourceChanges = edit.getResourceChanges();
+    if (resourceChanges.isEmpty()) {
+      return;
+    }
+    for (Either<ResourceChange, TextDocumentEdit> rChange : resourceChanges) {
+      if (rChange.isRight()) {
+        continue;
+      }
+
+      ResourceChange change = rChange.getLeft();
+      if (change == null) {
+        continue;
+      }
+      String newUri = change.getNewUri();
+      String current = change.getCurrent();
+
+      Path path = toPath(newUri).removeFirstSegments(1).makeAbsolute();
+      if (isNullOrEmpty(current)) {
+        createResource(path, notification);
+        continue;
+      }
+      Path oldPath = toPath(current).removeFirstSegments(1).makeAbsolute();
+
+      Container workspaceRoot = appContext.getWorkspaceRoot();
+      workspaceRoot
+          .getResource(oldPath)
+          .then(
+              arg -> {
+                if (!arg.isPresent()) {
+                  return;
+                }
+
+                Resource resource = arg.get();
+
+                editorAgent.saveAll(
+                    new AsyncCallback<Void>() {
+                      @Override
+                      public void onFailure(Throwable throwable) {
+                        notification.setContent("Can't save files.");
+                      }
+
+                      @Override
+                      public void onSuccess(Void aVoid) {
+                        final List<EditorPartPresenter> openedEditors =
+                            editorAgent.getOpenedEditors();
+                        for (EditorPartPresenter editor : openedEditors) {
+                          if (resource
+                              .getLocation()
+                              .isPrefixOf(editor.getEditorInput().getFile().getLocation())) {
+                            TextDocumentIdentifier documentId =
+                                dtoHelper.createTDI(editor.getEditorInput().getFile());
+                            DidCloseTextDocumentParams closeEvent =
+                                dtoFactory.createDto(DidCloseTextDocumentParams.class);
+                            closeEvent.setTextDocument(documentId);
+                            textDocumentService.didClose(closeEvent);
+                          }
+                        }
+                        moveResource(resource, path, notification);
+                      }
+                    });
+              });
+    }
+  }
+
+  private void createResource(Path path, Notification notification) {
+    Container workspaceRoot = appContext.getWorkspaceRoot();
+    workspaceRoot
+        .getResource(path)
+        .then(
+            resource -> {
+              if (isNullOrEmpty(path.getFileExtension())) {
+                projectService
+                    .createFolder(path)
+                    .catchError(
+                        arg -> {
+                          notification.setContent(arg.getMessage());
+                        });
+              } else {
+                projectService
+                    .createFile(path, "")
+                    .catchError(
+                        arg -> {
+                          notification.setContent(arg.getMessage());
+                        });
+              }
+            });
+  }
+
+  private void moveResource(Resource resource, Path path, Notification notification) {
+    if (resource.isProject()) {
+      closeRelatedEditors(resource);
+    }
+    resource
+        .move(path)
+        .then(
+            arg -> {
+              if (arg.isFolder()) {
+                return;
+              }
+              final List<EditorPartPresenter> openedEditors = editorAgent.getOpenedEditors();
+
+              for (EditorPartPresenter editor : openedEditors) {
+                VirtualFile file = editor.getEditorInput().getFile();
+                if (arg.getLocation().equals(file.getLocation())) {
+                  eventBus.fireEvent(FileEvent.createFileOpenedEvent(file));
+                  return;
+                }
+              }
+            })
+        .catchError(
+            arg -> {
+              notification.setContent(arg.getMessage());
+            });
+  }
+
+  private void closeRelatedEditors(Resource resource) {
+    final List<EditorPartPresenter> openedEditors = editorAgent.getOpenedEditors();
+
+    for (EditorPartPresenter editor : openedEditors) {
+      if (resource.getLocation().isPrefixOf(editor.getEditorInput().getFile().getLocation())) {
+        editorAgent.closeEditor(editor);
+      }
+    }
+  }
+
+  private Path toPath(String uri) {
+    return uri.startsWith("/") ? new Path(uri) : new Path(new UrlBuilder(uri).getPath());
   }
 
   private Promise<Supplier<Promise<Void>>> handleFileChange(

@@ -18,10 +18,8 @@ import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import com.google.web.bindery.event.shared.EventBus;
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.List;
-import org.eclipse.che.api.promises.client.Operation;
-import org.eclipse.che.api.promises.client.OperationException;
-import org.eclipse.che.api.promises.client.PromiseError;
 import org.eclipse.che.ide.api.editor.EditorWithAutoSave;
 import org.eclipse.che.ide.api.editor.events.FileEvent;
 import org.eclipse.che.ide.api.editor.events.FileEvent.FileEventHandler;
@@ -40,7 +38,6 @@ import org.eclipse.che.ide.api.resources.VirtualFile;
 import org.eclipse.che.ide.dto.DtoFactory;
 import org.eclipse.che.ide.ext.java.client.JavaLocalizationConstant;
 import org.eclipse.che.ide.ext.java.client.refactoring.RefactorInfo;
-import org.eclipse.che.ide.ext.java.client.refactoring.RefactoringUpdater;
 import org.eclipse.che.ide.ext.java.client.refactoring.move.RefactoredItemType;
 import org.eclipse.che.ide.ext.java.client.refactoring.rename.wizard.RenamePresenter;
 import org.eclipse.che.ide.ext.java.client.service.JavaLanguageExtensionServiceClient;
@@ -51,9 +48,15 @@ import org.eclipse.che.jdt.ls.extension.api.dto.LinkedModelParams;
 import org.eclipse.che.jdt.ls.extension.api.dto.LinkedPositionGroup;
 import org.eclipse.che.jdt.ls.extension.api.dto.Region;
 import org.eclipse.che.jdt.ls.extension.api.dto.RenameSettings;
+import org.eclipse.che.plugin.languageserver.ide.editor.quickassist.ApplyWorkspaceEditAction;
+import org.eclipse.che.plugin.languageserver.ide.service.TextDocumentServiceClient;
 import org.eclipse.che.plugin.languageserver.ide.util.DtoBuildHelper;
+import org.eclipse.lsp4j.DidCloseTextDocumentParams;
 import org.eclipse.lsp4j.RenameParams;
+import org.eclipse.lsp4j.ResourceChange;
 import org.eclipse.lsp4j.TextDocumentIdentifier;
+import org.eclipse.lsp4j.WorkspaceEdit;
+import org.eclipse.lsp4j.jsonrpc.messages.Either;
 
 /**
  * Class for rename refactoring java classes
@@ -64,12 +67,15 @@ import org.eclipse.lsp4j.TextDocumentIdentifier;
 @Singleton
 public class JavaRefactoringRename implements FileEventHandler {
   private final RenamePresenter renamePresenter;
-  private DtoBuildHelper dtoBuildHelper;
-  private final RefactoringUpdater refactoringUpdater;
+  private final DtoBuildHelper dtoHelper;
+  private final ApplyWorkspaceEditAction applyWorkspaceEditAction;
+  private final DtoBuildHelper dtoBuildHelper;
+  private final TextDocumentServiceClient textDocumentServiceClient;
   private final JavaLocalizationConstant locale;
   private final DtoFactory dtoFactory;
-  private JavaLanguageExtensionServiceClient extensionServiceClient;
+  private final JavaLanguageExtensionServiceClient extensionServiceClient;
   private final ClientServerEventService clientServerEventService;
+  private final EventBus eventBus;
   private final DialogFactory dialogFactory;
   private final NotificationManager notificationManager;
 
@@ -83,8 +89,10 @@ public class JavaRefactoringRename implements FileEventHandler {
   @Inject
   public JavaRefactoringRename(
       RenamePresenter renamePresenter,
+      DtoBuildHelper dtoHelper,
+      ApplyWorkspaceEditAction applyWorkspaceEditAction,
       DtoBuildHelper dtoBuildHelper,
-      RefactoringUpdater refactoringUpdater,
+      TextDocumentServiceClient textDocumentServiceClient,
       JavaLocalizationConstant locale,
       JavaLanguageExtensionServiceClient extensionServiceClient,
       ClientServerEventService clientServerEventService,
@@ -93,11 +101,14 @@ public class JavaRefactoringRename implements FileEventHandler {
       DialogFactory dialogFactory,
       NotificationManager notificationManager) {
     this.renamePresenter = renamePresenter;
+    this.dtoHelper = dtoHelper;
+    this.applyWorkspaceEditAction = applyWorkspaceEditAction;
     this.dtoBuildHelper = dtoBuildHelper;
-    this.refactoringUpdater = refactoringUpdater;
+    this.textDocumentServiceClient = textDocumentServiceClient;
     this.locale = locale;
     this.extensionServiceClient = extensionServiceClient;
     this.clientServerEventService = clientServerEventService;
+    this.eventBus = eventBus;
     this.dialogFactory = dialogFactory;
     this.dtoFactory = dtoFactory;
     this.notificationManager = notificationManager;
@@ -187,6 +198,7 @@ public class JavaRefactoringRename implements FileEventHandler {
   }
 
   private void activateLinkedModeIntoEditor(LinkedModeModel linkedModeModel) {
+    sendCloseEvent();
     mode = linkedEditor.getLinkedMode();
     LinkedModel model = linkedEditor.createLinkedModel();
     List<LinkedModelGroup> groups = new ArrayList<>();
@@ -245,6 +257,17 @@ public class JavaRefactoringRename implements FileEventHandler {
         });
   }
 
+  private void sendCloseEvent() {
+    TextDocumentIdentifier documentId = dtoHelper.createTDI(textEditor.getEditorInput().getFile());
+    DidCloseTextDocumentParams closeEvent = dtoFactory.createDto(DidCloseTextDocumentParams.class);
+    closeEvent.setTextDocument(documentId);
+    textDocumentServiceClient.didClose(closeEvent);
+  }
+
+  private void sendOpenEvent() {
+    eventBus.fireEvent(FileEvent.createFileOpenedEvent(textEditor.getEditorInput().getFile()));
+  }
+
   private void performRename(String newName) {
     RenameSettings settings = dtoFactory.createDto(RenameSettings.class);
 
@@ -267,20 +290,24 @@ public class JavaRefactoringRename implements FileEventHandler {
         .then(
             edits -> {
               enableAutoSave();
-              // TODO refactoringUpdater.updateAfterRefactoring(changes)
+              WorkspaceEdit edit = new WorkspaceEdit();
+              edit.setChanges(edits.getChanges());
+              edit.setResourceChanges(new LinkedList<>());
+              for (ResourceChange resourceChange : edits.getResourceChanges()) {
+                edit.getResourceChanges().add(Either.forLeft(resourceChange));
+              }
+              undoChanges();
+              applyWorkspaceEditAction.applyWorkspaceEdit(edit);
               clientServerEventService.sendFileTrackingResumeEvent();
+              sendOpenEvent();
             })
         .catchError(
-            new Operation<PromiseError>() {
-              @Override
-              public void apply(PromiseError error) throws OperationException {
-                undoChanges();
-                enableAutoSave();
-                // TODO
-                clientServerEventService.sendFileTrackingResumeEvent();
-                notificationManager.notify(
-                    locale.failedToRename(), error.getMessage(), FAIL, FLOAT_MODE);
-              }
+            error -> {
+              undoChanges();
+              enableAutoSave();
+              clientServerEventService.sendFileTrackingResumeEvent();
+              notificationManager.notify(
+                  locale.failedToRename(), error.getMessage(), FAIL, FLOAT_MODE);
             });
   }
 

@@ -10,7 +10,7 @@
  */
 package org.eclipse.che.ide.ext.java.client.refactoring.preview;
 
-import static org.eclipse.che.ide.ext.java.shared.dto.refactoring.RefactoringStatus.OK;
+import static java.util.stream.Collectors.toList;
 
 import com.google.common.base.Optional;
 import com.google.gwt.dom.client.Document;
@@ -18,25 +18,24 @@ import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import org.eclipse.che.api.promises.client.Promise;
 import org.eclipse.che.ide.api.app.AppContext;
-import org.eclipse.che.ide.api.filewatcher.ClientServerEventService;
 import org.eclipse.che.ide.api.resources.Container;
 import org.eclipse.che.ide.api.resources.File;
 import org.eclipse.che.ide.dto.DtoFactory;
 import org.eclipse.che.ide.ext.java.client.refactoring.RefactorInfo;
-import org.eclipse.che.ide.ext.java.client.refactoring.RefactoringUpdater;
-import org.eclipse.che.ide.ext.java.client.refactoring.service.RefactoringServiceClient;
-import org.eclipse.che.ide.ext.java.shared.dto.refactoring.ChangeInfo;
+import org.eclipse.che.ide.ext.java.client.refactoring.RefactoringActionDelegate;
 import org.eclipse.che.ide.ext.java.shared.dto.refactoring.ChangePreview;
-import org.eclipse.che.ide.ext.java.shared.dto.refactoring.RefactoringSession;
 import org.eclipse.che.ide.resource.Path;
 import org.eclipse.che.ide.rest.UrlBuilder;
 import org.eclipse.che.jdt.ls.extension.api.dto.CheWorkspaceEdit;
+import org.eclipse.che.plugin.languageserver.ide.editor.quickassist.ApplyWorkspaceEditAction;
 import org.eclipse.lsp4j.ResourceChange;
 import org.eclipse.lsp4j.TextEdit;
+import org.eclipse.lsp4j.WorkspaceEdit;
 import org.eclipse.lsp4j.jsonrpc.messages.Either;
 
 /**
@@ -48,35 +47,27 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
 
   private final PreviewView view;
   private final AppContext appContext;
+  private final ApplyWorkspaceEditAction applyWorkspaceEditAction;
   private final DtoFactory dtoFactory;
-  private final RefactoringUpdater refactoringUpdater;
-  private final RefactoringServiceClient refactoringService;
-  private final ClientServerEventService clientServerEventService;
 
-  private RefactoringSession session;
   private Map<String, PreviewNode> nodes;
+  private CheWorkspaceEdit workspaceEdit;
+  private RefactoringActionDelegate refactoringActionDelegate;
 
   @Inject
   public PreviewPresenter(
       PreviewView view,
       AppContext appContext,
-      DtoFactory dtoFactory,
-      RefactoringUpdater refactoringUpdater,
-      RefactoringServiceClient refactoringService,
-      ClientServerEventService clientServerEventService) {
+      ApplyWorkspaceEditAction applyWorkspaceEditAction,
+      DtoFactory dtoFactory) {
     this.view = view;
     this.appContext = appContext;
+    this.applyWorkspaceEditAction = applyWorkspaceEditAction;
     this.dtoFactory = dtoFactory;
-    this.refactoringUpdater = refactoringUpdater;
-    this.refactoringService = refactoringService;
-    this.clientServerEventService = clientServerEventService;
     this.view.setDelegate(this);
   }
 
   public void show(String refactoringSessionId, RefactorInfo refactorInfo) {
-    session = dtoFactory.createDto(RefactoringSession.class);
-    session.setSessionId(refactoringSessionId);
-
     view.showDialog();
   }
 
@@ -98,35 +89,18 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
   /** {@inheritDoc} */
   @Override
   public void onAcceptButtonClicked() {
-    clientServerEventService
-        .sendFileTrackingSuspendEvent()
-        .then(
-            success -> {
-              applyRefactoring();
-            });
-  }
+    updateFinalEdits();
 
-  private void applyRefactoring() {
-    refactoringService
-        .applyRefactoring(session)
-        .then(
-            refactoringResult -> {
-              List<ChangeInfo> changes = refactoringResult.getChanges();
-              if (refactoringResult.getSeverity() == OK) {
-                view.close();
-                refactoringUpdater
-                    .updateAfterRefactoring(changes)
-                    .then(
-                        refactoringUpdater
-                            .handleMovingFiles(changes)
-                            .then(clientServerEventService.sendFileTrackingResumeEvent()));
-              } else {
-                view.showErrorMessage(refactoringResult);
-                refactoringUpdater
-                    .handleMovingFiles(changes)
-                    .then(clientServerEventService.sendFileTrackingResumeEvent());
-              }
-            });
+    WorkspaceEdit edit = new WorkspaceEdit();
+    edit.setChanges(workspaceEdit.getChanges());
+    edit.setResourceChanges(new LinkedList<>());
+    for (ResourceChange resourceChange : workspaceEdit.getResourceChanges()) {
+      edit.getResourceChanges().add(Either.forLeft(resourceChange));
+    }
+
+    applyWorkspaceEditAction.applyWorkspaceEdit(edit);
+    view.close();
+    refactoringActionDelegate.closeWizard();
   }
 
   /** {@inheritDoc} */
@@ -204,7 +178,10 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
     }
   }
 
-  public void show(CheWorkspaceEdit workspaceEdit) {
+  public void show(
+      CheWorkspaceEdit workspaceEdit, RefactoringActionDelegate refactoringActionDelegate) {
+    this.workspaceEdit = workspaceEdit;
+    this.refactoringActionDelegate = refactoringActionDelegate;
     nodes = new LinkedHashMap<>();
 
     prepareNodes(workspaceEdit);
@@ -262,6 +239,46 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
         child.setData(Either.forRight(change));
         child.setUri(uri);
         parent.getChildren().add(child);
+      }
+    }
+  }
+
+  private void updateFinalEdits() {
+    for (PreviewNode node : nodes.values()) {
+      Either<ResourceChange, TextEdit> data = node.getData();
+      if (data != null && data.isLeft()) {
+        if (node.isEnable()) {
+          continue;
+        }
+        ResourceChange left = data.getLeft();
+        List<ResourceChange> selectedResourceChanges =
+            workspaceEdit
+                .getResourceChanges()
+                .stream()
+                .filter(item -> !item.equals(left))
+                .collect(toList());
+        workspaceEdit.setResourceChanges(selectedResourceChanges);
+      } else {
+        if (data == null && !node.isEnable()) {
+          workspaceEdit.getChanges().remove(node.getUri());
+          continue;
+        }
+        List<PreviewNode> children = node.getChildren();
+        for (PreviewNode textNode : children) {
+          if (textNode.isEnable()) {
+            continue;
+          }
+          TextEdit right = textNode.getData().getRight();
+          List<TextEdit> textNodes =
+              workspaceEdit
+                  .getChanges()
+                  .get(node.getUri())
+                  .stream()
+                  .filter(item -> !item.equals(right))
+                  .collect(toList());
+
+          workspaceEdit.getChanges().put(node.getUri(), textNodes);
+        }
       }
     }
   }

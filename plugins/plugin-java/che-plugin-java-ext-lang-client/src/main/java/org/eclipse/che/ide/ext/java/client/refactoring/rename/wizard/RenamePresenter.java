@@ -15,38 +15,36 @@ import static org.eclipse.che.ide.api.notification.StatusNotification.Status.FAI
 
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
-import java.util.List;
-import org.eclipse.che.api.promises.client.Operation;
+import java.util.LinkedList;
 import org.eclipse.che.api.promises.client.Promise;
-import org.eclipse.che.ide.api.app.AppContext;
 import org.eclipse.che.ide.api.editor.EditorAgent;
 import org.eclipse.che.ide.api.editor.EditorPartPresenter;
 import org.eclipse.che.ide.api.editor.text.TextPosition;
 import org.eclipse.che.ide.api.editor.texteditor.TextEditor;
-import org.eclipse.che.ide.api.filewatcher.ClientServerEventService;
 import org.eclipse.che.ide.api.notification.NotificationManager;
 import org.eclipse.che.ide.api.resources.Resource;
 import org.eclipse.che.ide.api.resources.VirtualFile;
 import org.eclipse.che.ide.dto.DtoFactory;
 import org.eclipse.che.ide.ext.java.client.JavaLocalizationConstant;
 import org.eclipse.che.ide.ext.java.client.refactoring.RefactorInfo;
-import org.eclipse.che.ide.ext.java.client.refactoring.RefactoringUpdater;
+import org.eclipse.che.ide.ext.java.client.refactoring.RefactoringActionDelegate;
 import org.eclipse.che.ide.ext.java.client.refactoring.move.RefactoredItemType;
 import org.eclipse.che.ide.ext.java.client.refactoring.preview.PreviewPresenter;
 import org.eclipse.che.ide.ext.java.client.refactoring.rename.wizard.RenameView.ActionDelegate;
 import org.eclipse.che.ide.ext.java.client.refactoring.rename.wizard.similarnames.SimilarNamesConfigurationPresenter;
 import org.eclipse.che.ide.ext.java.client.service.JavaLanguageExtensionServiceClient;
-import org.eclipse.che.ide.ext.java.shared.dto.refactoring.ChangeInfo;
-import org.eclipse.che.ide.ui.dialogs.DialogFactory;
 import org.eclipse.che.jdt.ls.extension.api.RenameType;
 import org.eclipse.che.jdt.ls.extension.api.dto.CheWorkspaceEdit;
-import org.eclipse.che.jdt.ls.extension.api.dto.NameValidationStatus;
 import org.eclipse.che.jdt.ls.extension.api.dto.RenameSelectionParams;
 import org.eclipse.che.jdt.ls.extension.api.dto.RenameSettings;
 import org.eclipse.che.jdt.ls.extension.api.dto.RenameWizardType;
+import org.eclipse.che.plugin.languageserver.ide.editor.quickassist.ApplyWorkspaceEditAction;
 import org.eclipse.che.plugin.languageserver.ide.util.DtoBuildHelper;
 import org.eclipse.lsp4j.RenameParams;
+import org.eclipse.lsp4j.ResourceChange;
 import org.eclipse.lsp4j.TextDocumentIdentifier;
+import org.eclipse.lsp4j.WorkspaceEdit;
+import org.eclipse.lsp4j.jsonrpc.messages.Either;
 
 /**
  * The class that manages Rename panel widget.
@@ -54,50 +52,43 @@ import org.eclipse.lsp4j.TextDocumentIdentifier;
  * @author Valeriy Svydenko
  */
 @Singleton
-public class RenamePresenter implements ActionDelegate {
+public class RenamePresenter implements ActionDelegate, RefactoringActionDelegate {
   private final RenameView view;
-  private JavaLanguageExtensionServiceClient extensionServiceClient;
+  private final JavaLanguageExtensionServiceClient extensionServiceClient;
   private final SimilarNamesConfigurationPresenter similarNamesConfigurationPresenter;
+  private final ApplyWorkspaceEditAction applyWorkspaceEditAction;
   private final JavaLocalizationConstant locale;
   private final DtoBuildHelper dtoBuildHelper;
-  private final RefactoringUpdater refactoringUpdater;
   private final EditorAgent editorAgent;
   private final NotificationManager notificationManager;
-  private final AppContext appContext;
   private final PreviewPresenter previewPresenter;
   private final DtoFactory dtoFactory;
-  private final DialogFactory dialogFactory;
-  private final ClientServerEventService clientServerEventService;
+
+  private RefactorInfo refactorInfo;
 
   @Inject
   public RenamePresenter(
       RenameView view,
       JavaLanguageExtensionServiceClient extensionServiceClient,
       SimilarNamesConfigurationPresenter similarNamesConfigurationPresenter,
+      ApplyWorkspaceEditAction applyWorkspaceEditAction,
       JavaLocalizationConstant locale,
       DtoBuildHelper dtoBuildHelper,
       EditorAgent editorAgent,
-      RefactoringUpdater refactoringUpdater,
-      AppContext appContext,
       NotificationManager notificationManager,
       PreviewPresenter previewPresenter,
-      ClientServerEventService clientServerEventService,
-      DtoFactory dtoFactory,
-      DialogFactory dialogFactory) {
+      DtoFactory dtoFactory) {
     this.view = view;
     this.extensionServiceClient = extensionServiceClient;
     this.similarNamesConfigurationPresenter = similarNamesConfigurationPresenter;
+    this.applyWorkspaceEditAction = applyWorkspaceEditAction;
     this.locale = locale;
     this.dtoBuildHelper = dtoBuildHelper;
-    this.refactoringUpdater = refactoringUpdater;
     this.editorAgent = editorAgent;
     this.notificationManager = notificationManager;
-    this.clientServerEventService = clientServerEventService;
     this.view.setDelegate(this);
-    this.appContext = appContext;
     this.previewPresenter = previewPresenter;
     this.dtoFactory = dtoFactory;
-    this.dialogFactory = dialogFactory;
   }
 
   /**
@@ -106,6 +97,7 @@ public class RenamePresenter implements ActionDelegate {
    * @param refactorInfo information about the rename operation
    */
   public void show(RefactorInfo refactorInfo) {
+    this.refactorInfo = refactorInfo;
     TextEditor editor = (TextEditor) editorAgent.getActiveEditor();
 
     RenameSelectionParams params = dtoFactory.createDto(RenameSelectionParams.class);
@@ -227,44 +219,54 @@ public class RenamePresenter implements ActionDelegate {
   /** {@inheritDoc} */
   @Override
   public void validateName() {
-    TextEditor editor = (TextEditor) editorAgent.getActiveEditor();
-
-    TextPosition cursorPosition = editor.getCursorPosition();
-    org.eclipse.lsp4j.Position position = dtoFactory.createDto(org.eclipse.lsp4j.Position.class);
-    position.setCharacter(cursorPosition.getCharacter());
-    position.setLine(cursorPosition.getLine());
-
     RenameSelectionParams params = dtoFactory.createDto(RenameSelectionParams.class);
-    String location =
-        editorAgent.getActiveEditor().getEditorInput().getFile().getLocation().toString();
-    params.setResourceUri(location);
-    params.setPosition(position);
+
+    if (RefactoredItemType.JAVA_ELEMENT.equals(refactorInfo.getRefactoredItemType())) {
+      TextEditor editor = (TextEditor) editorAgent.getActiveEditor();
+      TextPosition cursorPosition = editor.getCursorPosition();
+      org.eclipse.lsp4j.Position position = dtoFactory.createDto(org.eclipse.lsp4j.Position.class);
+      position.setCharacter(cursorPosition.getCharacter());
+      position.setLine(cursorPosition.getLine());
+      params.setPosition(position);
+      params.setRenameType(RenameType.JAVA_ELEMENT);
+      String location =
+          editorAgent.getActiveEditor().getEditorInput().getFile().getLocation().toString();
+      params.setResourceUri(location);
+    } else if (RefactoredItemType.COMPILATION_UNIT.equals(refactorInfo.getRefactoredItemType())) {
+      params.setRenameType(RenameType.COMPILATION_UNIT);
+      params.setResourceUri(refactorInfo.getResources()[0].getLocation().toString());
+    } else if (RefactoredItemType.PACKAGE.equals(refactorInfo.getRefactoredItemType())) {
+      params.setRenameType(RenameType.PACKAGE);
+      params.setResourceUri(refactorInfo.getResources()[0].getLocation().toString());
+    }
 
     params.setNewName(view.getNewName());
 
     extensionServiceClient
         .validateRenamedName(params)
         .then(
-            (Operation<NameValidationStatus>)
-                status -> {
-                  switch (status.getRefactoringSeverity()) {
-                    case OK:
-                      view.setEnableAcceptButton(true);
-                      view.setEnablePreviewButton(true);
-                      view.clearErrorLabel();
-                      break;
-                    case INFO:
-                      view.setEnableAcceptButton(true);
-                      view.setEnablePreviewButton(true);
-                      view.showStatusMessage(status);
-                      break;
-                    default:
-                      view.setEnableAcceptButton(false);
-                      view.setEnablePreviewButton(false);
-                      view.showErrorMessage(status);
-                      break;
-                  }
-                })
+            status -> {
+              if (status == null) {
+                return;
+              }
+              switch (status.getRefactoringSeverity()) {
+                case OK:
+                  view.setEnableAcceptButton(true);
+                  view.setEnablePreviewButton(true);
+                  view.clearErrorLabel();
+                  break;
+                case INFO:
+                  view.setEnableAcceptButton(true);
+                  view.setEnablePreviewButton(true);
+                  view.showStatusMessage(status);
+                  break;
+                default:
+                  view.setEnableAcceptButton(false);
+                  view.setEnablePreviewButton(false);
+                  view.showErrorMessage(status);
+                  break;
+              }
+            })
         .catchError(
             error -> {
               notificationManager.notify(
@@ -276,25 +278,14 @@ public class RenamePresenter implements ActionDelegate {
     getChanges()
         .then(
             workspaceEdit -> {
-              previewPresenter.show(workspaceEdit);
+              previewPresenter.show(workspaceEdit, this);
               previewPresenter.setTitle(locale.renameItemTitle());
             });
   }
 
   private Promise<CheWorkspaceEdit> getChanges() {
     RenameSettings renameSettings = createRenameSettings();
-    RenameParams renameParams = dtoFactory.createDto(RenameParams.class);
-    renameParams.setNewName(view.getNewName());
-    EditorPartPresenter activeEditor = editorAgent.getActiveEditor();
-    VirtualFile file = activeEditor.getEditorInput().getFile();
-    TextDocumentIdentifier textDocumentIdentifier = dtoBuildHelper.createTDI(file);
-    renameParams.setTextDocument(textDocumentIdentifier);
-
-    TextPosition cursorPosition = ((TextEditor) activeEditor).getCursorPosition();
-    org.eclipse.lsp4j.Position position = dtoFactory.createDto(org.eclipse.lsp4j.Position.class);
-    position.setCharacter(cursorPosition.getCharacter());
-    position.setLine(cursorPosition.getLine());
-    renameParams.setPosition(position);
+    RenameParams renameParams = createRenameParams(renameSettings);
 
     renameSettings.setRenameParams(renameParams);
 
@@ -307,35 +298,48 @@ public class RenamePresenter implements ActionDelegate {
             });
   }
 
-  private void applyRefactoring(CheWorkspaceEdit workspaceEdit) {
-    //    refactorService
-    //        .applyRefactoring(session)
-    //        .then(
-    //            refactoringResult -> {
-    //              List<ChangeInfo> changes = refactoringResult.getChanges();
-    //              if (refactoringResult.getSeverity() == RefactoringStatus.OK) {
-    //                view.close();
-    //                updateAfterRefactoring(changes)
-    //                    .then(
-    //                        refactoringUpdater
-    //                            .handleMovingFiles(changes)
-    //                            .then(clientServerEventService.sendFileTrackingResumeEvent()));
-    //              } else {
-    //                view.showErrorMessage(refactoringResult);
-    //                refactoringUpdater
-    //                    .handleMovingFiles(changes)
-    //                    .then(clientServerEventService.sendFileTrackingResumeEvent());
-    //              }
-    //            });
+  private RenameParams createRenameParams(RenameSettings renameSettings) {
+    RenameParams renameParams = dtoFactory.createDto(RenameParams.class);
+    renameParams.setNewName(view.getNewName());
+
+    if (RefactoredItemType.JAVA_ELEMENT.equals(refactorInfo.getRefactoredItemType())) {
+      EditorPartPresenter activeEditor = editorAgent.getActiveEditor();
+      VirtualFile file = activeEditor.getEditorInput().getFile();
+      TextDocumentIdentifier textDocumentIdentifier = dtoBuildHelper.createTDI(file);
+      renameParams.setTextDocument(textDocumentIdentifier);
+
+      TextPosition cursorPosition = ((TextEditor) activeEditor).getCursorPosition();
+      org.eclipse.lsp4j.Position position = dtoFactory.createDto(org.eclipse.lsp4j.Position.class);
+      position.setCharacter(cursorPosition.getCharacter());
+      position.setLine(cursorPosition.getLine());
+      renameParams.setPosition(position);
+      renameSettings.setRenameType(RenameType.JAVA_ELEMENT);
+    } else if (RefactoredItemType.COMPILATION_UNIT.equals(refactorInfo.getRefactoredItemType())) {
+      renameSettings.setRenameType(RenameType.COMPILATION_UNIT);
+      TextDocumentIdentifier textDocumentIdentifier =
+          dtoFactory.createDto(TextDocumentIdentifier.class);
+      textDocumentIdentifier.setUri(refactorInfo.getResources()[0].getLocation().toString());
+      renameParams.setTextDocument(textDocumentIdentifier);
+    } else if (RefactoredItemType.PACKAGE.equals(refactorInfo.getRefactoredItemType())) {
+      renameSettings.setRenameType(RenameType.PACKAGE);
+      TextDocumentIdentifier textDocumentIdentifier =
+          dtoFactory.createDto(TextDocumentIdentifier.class);
+      textDocumentIdentifier.setUri(refactorInfo.getResources()[0].getLocation().toString());
+      renameParams.setTextDocument(textDocumentIdentifier);
+    }
+    return renameParams;
   }
 
-  private Promise<Void> updateAfterRefactoring(List<ChangeInfo> changes) {
-    return refactoringUpdater
-        .updateAfterRefactoring(changes)
-        .then(
-            arg -> {
-              setEditorFocus();
-            });
+  private void applyRefactoring(CheWorkspaceEdit workspaceEdit) {
+    view.close();
+    WorkspaceEdit edit = new WorkspaceEdit();
+    edit.setChanges(workspaceEdit.getChanges());
+    edit.setResourceChanges(new LinkedList<>());
+    for (ResourceChange resourceChange : workspaceEdit.getResourceChanges()) {
+      edit.getResourceChanges().add(Either.forLeft(resourceChange));
+    }
+    applyWorkspaceEditAction.applyWorkspaceEdit(edit);
+    setEditorFocus();
   }
 
   private RenameSettings createRenameSettings() {
@@ -358,5 +362,11 @@ public class RenamePresenter implements ActionDelegate {
     }
 
     return renameSettings;
+  }
+
+  @Override
+  public void closeWizard() {
+    view.close();
+    setEditorFocus();
   }
 }
