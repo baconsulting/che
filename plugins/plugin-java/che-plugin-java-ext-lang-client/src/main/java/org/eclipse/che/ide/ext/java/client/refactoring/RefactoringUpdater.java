@@ -31,7 +31,6 @@ import org.eclipse.che.ide.api.editor.EditorAgent;
 import org.eclipse.che.ide.api.editor.EditorPartPresenter;
 import org.eclipse.che.ide.api.editor.events.FileContentUpdateEvent;
 import org.eclipse.che.ide.api.filewatcher.ClientServerEventService;
-import org.eclipse.che.ide.api.notification.NotificationManager;
 import org.eclipse.che.ide.api.parts.PartPresenter;
 import org.eclipse.che.ide.api.parts.WorkspaceAgent;
 import org.eclipse.che.ide.api.resources.ExternalResourceDelta;
@@ -41,9 +40,6 @@ import org.eclipse.che.ide.ext.java.shared.dto.refactoring.ChangeInfo;
 import org.eclipse.che.ide.part.editor.multipart.EditorMultiPartStackPresenter;
 import org.eclipse.che.ide.resource.Path;
 import org.eclipse.che.ide.resources.reveal.RevealResourceEvent;
-import org.eclipse.che.ide.rest.UrlBuilder;
-import org.eclipse.che.jdt.ls.extension.api.dto.CheWorkspaceEdit;
-import org.eclipse.lsp4j.ResourceChange;
 
 /**
  * Utility class for the refactoring operations. It is needed for refreshing the project tree,
@@ -61,7 +57,6 @@ public class RefactoringUpdater {
   private final DeletedFilesController deletedFilesController;
   private final EventBus eventBus;
   private final EditorAgent editorAgent;
-  private NotificationManager notificationManager;
   private final ClientServerEventService clientServerEventService;
   private final PromiseProvider promises;
 
@@ -73,7 +68,6 @@ public class RefactoringUpdater {
       DeletedFilesController deletedFilesController,
       EventBus eventBus,
       EditorAgent editorAgent,
-      NotificationManager notificationManager,
       ClientServerEventService clientServerEventService,
       PromiseProvider promises) {
     this.appContext = appContext;
@@ -82,7 +76,6 @@ public class RefactoringUpdater {
     this.deletedFilesController = deletedFilesController;
     this.eventBus = eventBus;
     this.editorAgent = editorAgent;
-    this.notificationManager = notificationManager;
     this.clientServerEventService = clientServerEventService;
     this.promises = promises;
   }
@@ -207,40 +200,6 @@ public class RefactoringUpdater {
               clientServerEventService.sendFileTrackingMoveEvent(path, oldPath);
             });
     return promises.resolve(null);
-  }
-
-  public Promise<Void> handleMovingFiles(CheWorkspaceEdit workspaceEdit) {
-    List<ResourceChange> resourceChanges = workspaceEdit.getResourceChanges();
-    if (resourceChanges == null || resourceChanges.isEmpty()) {
-      return promises.resolve(null);
-    }
-    resourceChanges
-        .stream()
-        .filter(change -> !isNullOrEmpty(change.getCurrent()))
-        .forEach(
-            change -> {
-              String newUri = change.getNewUri();
-              String currentUri = change.toString();
-
-              String path = toPath(newUri).removeFirstSegments(1).toString();
-              String oldPath = toPath(currentUri).removeFirstSegments(1).toString();
-              clientServerEventService.sendFileTrackingMoveEvent(path, oldPath);
-            });
-    return promises.resolve(null);
-  }
-
-  private void registerRemovedFile(String oldPath) {
-    for (EditorPartPresenter editorPartPresenter : editorAgent.getOpenedEditors()) {
-      String editorPath = editorPartPresenter.getEditorInput().getFile().getLocation().toString();
-      if (editorPath.equals(oldPath)) {
-        deletedFilesController.add(oldPath);
-        return;
-      }
-    }
-  }
-
-  private Path toPath(String uri) {
-    return uri.startsWith("/") ? new Path(uri) : new Path(new UrlBuilder(uri).getPath());
   }
 
   private void registerRemovedFile(ChangeInfo change) {
