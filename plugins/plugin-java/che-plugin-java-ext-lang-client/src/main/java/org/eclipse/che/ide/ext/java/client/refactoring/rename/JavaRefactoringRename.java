@@ -42,6 +42,7 @@ import org.eclipse.che.ide.ext.java.client.refactoring.move.RefactoredItemType;
 import org.eclipse.che.ide.ext.java.client.refactoring.rename.wizard.RenamePresenter;
 import org.eclipse.che.ide.ext.java.client.service.JavaLanguageExtensionServiceClient;
 import org.eclipse.che.ide.ui.dialogs.DialogFactory;
+import org.eclipse.che.jdt.ls.extension.api.RenameType;
 import org.eclipse.che.jdt.ls.extension.api.dto.LinkedData;
 import org.eclipse.che.jdt.ls.extension.api.dto.LinkedModeModel;
 import org.eclipse.che.jdt.ls.extension.api.dto.LinkedModelParams;
@@ -284,6 +285,7 @@ public class JavaRefactoringRename implements FileEventHandler {
 
     settings.setUpdateReferences(true);
     settings.setRenameParams(renameParams);
+    settings.setRenameType(RenameType.JAVA_ELEMENT);
 
     extensionServiceClient
         .rename(settings)
