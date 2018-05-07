@@ -214,8 +214,19 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
                   + "' to '"
                   + Path.valueOf(newUri).lastSegment()
                   + "'");
+        } else {
+          String pathString = toPath(newUri).removeFirstSegments(1).toString();
+          node.setDescription(
+              "Move resource '"
+                  + Path.valueOf(current).lastSegment()
+                  + "' to '"
+                  + Path.valueOf(pathString).removeLastSegments(1)
+                  + "'");
         }
-        // TODO need to set description for move operation
+        nodes.put(newUri, node);
+      } else if (current == null && newUri != null) {
+        String pathString = toPath(newUri).removeFirstSegments(1).toString();
+        node.setDescription("Create resource: '" + Path.valueOf(pathString) + "'");
         nodes.put(newUri, node);
       }
     }

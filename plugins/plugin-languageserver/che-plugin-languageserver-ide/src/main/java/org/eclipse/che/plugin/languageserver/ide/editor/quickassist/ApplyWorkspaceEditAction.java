@@ -15,6 +15,7 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import com.google.gwt.user.client.rpc.AsyncCallback;
 import com.google.inject.Inject;
 import com.google.web.bindery.event.shared.EventBus;
+import elemental.util.ArrayOf;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -83,6 +84,7 @@ public class ApplyWorkspaceEditAction extends BaseAction {
   private ProjectServiceClient projectService;
   private EventBus eventBus;
   private PromiseHelper promiseHelper;
+  private PromiseProvider promises;
   private TextDocumentServiceClient textDocumentService;
   private LanguageServerLocalization localization;
   private NotificationManager notificationManager;
@@ -98,6 +100,7 @@ public class ApplyWorkspaceEditAction extends BaseAction {
       ProjectServiceClient projectService,
       EventBus eventBus,
       PromiseHelper promiseHelper,
+      PromiseProvider promises,
       TextDocumentServiceClient textDocumentService,
       LanguageServerLocalization localization,
       NotificationManager notificationManager,
@@ -110,6 +113,7 @@ public class ApplyWorkspaceEditAction extends BaseAction {
     this.projectService = projectService;
     this.eventBus = eventBus;
     this.promiseHelper = promiseHelper;
+    this.promises = promises;
     this.textDocumentService = textDocumentService;
     this.localization = localization;
     this.notificationManager = notificationManager;
@@ -154,13 +158,15 @@ public class ApplyWorkspaceEditAction extends BaseAction {
             undos::add);
 
     done.then(
-            (Void v) -> {
-              applyResourceChanges(notification, edit);
-
-              Log.debug(getClass(), "done applying changes");
-              notification.setStatus(Status.SUCCESS);
-              notification.setContent(localization.applyWorkspaceActionNotificationDone());
-            })
+            (Void v) ->
+                applyResourceChanges(notification, edit)
+                    .then(
+                        arg -> {
+                          Log.debug(getClass(), "done applying changes");
+                          notification.setStatus(Status.SUCCESS);
+                          notification.setContent(
+                              localization.applyWorkspaceActionNotificationDone());
+                        }))
         .catchError(
             (error) -> {
               Log.info(getClass(), "caught error applying changes", error);
@@ -182,11 +188,14 @@ public class ApplyWorkspaceEditAction extends BaseAction {
             });
   }
 
-  private void applyResourceChanges(Notification notification, WorkspaceEdit edit) {
+  private Promise<Void> applyResourceChanges(Notification notification, WorkspaceEdit edit) {
     List<Either<ResourceChange, TextDocumentEdit>> resourceChanges = edit.getResourceChanges();
     if (resourceChanges.isEmpty()) {
-      return;
+      return promises.resolve(null);
     }
+
+    ArrayOf<Promise<?>> changesPromises = elemental.util.Collections.arrayOf();
+
     for (Either<ResourceChange, TextDocumentEdit> rChange : resourceChanges) {
       if (rChange.isRight()) {
         continue;
@@ -207,44 +216,46 @@ public class ApplyWorkspaceEditAction extends BaseAction {
       Path oldPath = toPath(current).removeFirstSegments(1).makeAbsolute();
 
       Container workspaceRoot = appContext.getWorkspaceRoot();
-      workspaceRoot
-          .getResource(oldPath)
-          .then(
-              arg -> {
-                if (!arg.isPresent()) {
-                  return;
-                }
+      changesPromises.push(
+          workspaceRoot
+              .getResource(oldPath)
+              .then(
+                  arg -> {
+                    if (!arg.isPresent()) {
+                      return;
+                    }
 
-                Resource resource = arg.get();
+                    Resource resource = arg.get();
 
-                editorAgent.saveAll(
-                    new AsyncCallback<Void>() {
-                      @Override
-                      public void onFailure(Throwable throwable) {
-                        notification.setContent("Can't save files.");
-                      }
-
-                      @Override
-                      public void onSuccess(Void aVoid) {
-                        final List<EditorPartPresenter> openedEditors =
-                            editorAgent.getOpenedEditors();
-                        for (EditorPartPresenter editor : openedEditors) {
-                          if (resource
-                              .getLocation()
-                              .isPrefixOf(editor.getEditorInput().getFile().getLocation())) {
-                            TextDocumentIdentifier documentId =
-                                dtoHelper.createTDI(editor.getEditorInput().getFile());
-                            DidCloseTextDocumentParams closeEvent =
-                                dtoFactory.createDto(DidCloseTextDocumentParams.class);
-                            closeEvent.setTextDocument(documentId);
-                            textDocumentService.didClose(closeEvent);
+                    editorAgent.saveAll(
+                        new AsyncCallback<Void>() {
+                          @Override
+                          public void onFailure(Throwable throwable) {
+                            notification.setContent("Can't save files.");
                           }
-                        }
-                        moveResource(resource, path, notification);
-                      }
-                    });
-              });
+
+                          @Override
+                          public void onSuccess(Void aVoid) {
+                            final List<EditorPartPresenter> openedEditors =
+                                editorAgent.getOpenedEditors();
+                            for (EditorPartPresenter editor : openedEditors) {
+                              if (resource
+                                  .getLocation()
+                                  .isPrefixOf(editor.getEditorInput().getFile().getLocation())) {
+                                TextDocumentIdentifier documentId =
+                                    dtoHelper.createTDI(editor.getEditorInput().getFile());
+                                DidCloseTextDocumentParams closeEvent =
+                                    dtoFactory.createDto(DidCloseTextDocumentParams.class);
+                                closeEvent.setTextDocument(documentId);
+                                textDocumentService.didClose(closeEvent);
+                              }
+                            }
+                            moveResource(resource, path, notification);
+                          }
+                        });
+                  }));
     }
+    return promises.all2(changesPromises).thenPromise(ignored -> promises.resolve(null));
   }
 
   private void createResource(Path path, Notification notification) {
