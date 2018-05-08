@@ -26,11 +26,11 @@ public class StringStreamEditor {
   private static final Comparator<TextEdit> COMPARATOR =
       RangeComparator.transform(new RangeComparator(), TextEdit::getRange);
   private ArrayList<TextEdit> edits;
-  private int currentReadLine = 0;
-  private int currentReadChar = 0;
+  private int currentReadLine;
+  private int currentReadChar;
 
-  private int currentWriteLine = 0;
-  private int currentWriteChar = 0;
+  private int currentWriteLine;
+  private int currentWriteChar;
 
   private int ch;
   private Supplier<Integer> source;
