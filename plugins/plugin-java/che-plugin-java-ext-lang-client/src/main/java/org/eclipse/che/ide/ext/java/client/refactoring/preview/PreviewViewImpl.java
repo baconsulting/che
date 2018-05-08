@@ -310,16 +310,16 @@ final class PreviewViewImpl extends Window implements PreviewView {
 
   private void refreshComperingFiles(@NotNull ChangePreview preview) {
     newFile.setContent(preview.getNewContent());
-    newFile.setName(preview.getFileName());
     oldFile.setContent(preview.getOldContent());
-    oldFile.setName(preview.getFileName());
 
     if (compare != null) {
-      compare.update(newFile, oldFile);
+      compare.update(oldFile, newFile);
     }
   }
 
   private void prepareDiffEditor(@NotNull ChangePreview preview) {
+    newFile.setName("Refactored Source");
+    oldFile.setName("Original Source");
     newFile = compareFactory.createFieOptions();
     newFile.setReadOnly(true);
 
@@ -329,8 +329,8 @@ final class PreviewViewImpl extends Window implements PreviewView {
     refreshComperingFiles(preview);
 
     CompareConfig compareConfig = compareFactory.createCompareConfig();
-    compareConfig.setNewFile(newFile);
-    compareConfig.setOldFile(oldFile);
+    compareConfig.setNewFile(oldFile);
+    compareConfig.setOldFile(newFile);
     compareConfig.setShowTitle(true);
     compareConfig.setShowLineStatus(true);
 
