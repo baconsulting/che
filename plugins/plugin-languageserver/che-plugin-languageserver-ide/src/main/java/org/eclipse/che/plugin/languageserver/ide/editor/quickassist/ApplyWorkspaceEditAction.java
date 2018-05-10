@@ -27,6 +27,7 @@ import javax.inject.Singleton;
 import org.eclipse.che.api.languageserver.shared.dto.DtoClientImpls.FileEditParamsDto;
 import org.eclipse.che.api.languageserver.shared.model.FileEditParams;
 import org.eclipse.che.api.languageserver.shared.util.RangeComparator;
+import org.eclipse.che.api.languageserver.util.URIUtil;
 import org.eclipse.che.api.promises.client.Function;
 import org.eclipse.che.api.promises.client.Promise;
 import org.eclipse.che.api.promises.client.PromiseError;
@@ -54,7 +55,6 @@ import org.eclipse.che.ide.api.resources.VirtualFile;
 import org.eclipse.che.ide.dto.DtoFactory;
 import org.eclipse.che.ide.project.ProjectServiceClient;
 import org.eclipse.che.ide.resource.Path;
-import org.eclipse.che.ide.rest.UrlBuilder;
 import org.eclipse.che.ide.util.loging.Log;
 import org.eclipse.che.plugin.languageserver.ide.LanguageServerLocalization;
 import org.eclipse.che.plugin.languageserver.ide.service.TextDocumentServiceClient;
@@ -208,12 +208,12 @@ public class ApplyWorkspaceEditAction extends BaseAction {
       String newUri = change.getNewUri();
       String current = change.getCurrent();
 
-      Path path = toPath(newUri).removeFirstSegments(1).makeAbsolute();
+      Path path = Path.valueOf(URIUtil.removePrefixUri(newUri)).makeAbsolute();
       if (isNullOrEmpty(current)) {
         createResource(path, notification);
         continue;
       }
-      Path oldPath = toPath(current).removeFirstSegments(1).makeAbsolute();
+      Path oldPath = Path.valueOf(URIUtil.removePrefixUri(current)).makeAbsolute();
 
       Container workspaceRoot = appContext.getWorkspaceRoot();
       changesPromises.push(
@@ -289,15 +289,15 @@ public class ApplyWorkspaceEditAction extends BaseAction {
     resource
         .move(path)
         .then(
-            arg -> {
-              if (arg.isFolder()) {
+            movedResource -> {
+              if (movedResource.isFolder()) {
                 return;
               }
               final List<EditorPartPresenter> openedEditors = editorAgent.getOpenedEditors();
 
               for (EditorPartPresenter editor : openedEditors) {
                 VirtualFile file = editor.getEditorInput().getFile();
-                if (arg.getLocation().equals(file.getLocation())) {
+                if (movedResource.getLocation().equals(file.getLocation())) {
                   eventBus.fireEvent(FileEvent.createFileOpenedEvent(file));
                   return;
                 }
@@ -317,10 +317,6 @@ public class ApplyWorkspaceEditAction extends BaseAction {
         editorAgent.closeEditor(editor);
       }
     }
-  }
-
-  private Path toPath(String uri) {
-    return uri.startsWith("/") ? new Path(uri) : new Path(new UrlBuilder(uri).getPath());
   }
 
   private Promise<Supplier<Promise<Void>>> handleFileChange(

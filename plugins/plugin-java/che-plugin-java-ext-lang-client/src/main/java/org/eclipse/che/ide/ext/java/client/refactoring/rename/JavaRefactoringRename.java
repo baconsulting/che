@@ -171,6 +171,7 @@ public class JavaRefactoringRename implements FileEventHandler {
                         if (linkedModeModel == null) {
                           showError();
                           isActiveLinkedEditor = false;
+                          clientServerEventService.sendFileTrackingResumeEvent();
                           return;
                         }
                         activateLinkedModeIntoEditor(linkedModeModel);

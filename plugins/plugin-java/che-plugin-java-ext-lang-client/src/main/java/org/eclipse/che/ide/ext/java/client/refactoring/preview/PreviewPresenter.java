@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import org.eclipse.che.api.languageserver.util.URIUtil;
 import org.eclipse.che.api.promises.client.Promise;
 import org.eclipse.che.ide.api.app.AppContext;
 import org.eclipse.che.ide.api.resources.Container;
@@ -30,7 +31,6 @@ import org.eclipse.che.ide.ext.java.client.refactoring.RefactorInfo;
 import org.eclipse.che.ide.ext.java.client.refactoring.RefactoringActionDelegate;
 import org.eclipse.che.ide.ext.java.shared.dto.refactoring.ChangePreview;
 import org.eclipse.che.ide.resource.Path;
-import org.eclipse.che.ide.rest.UrlBuilder;
 import org.eclipse.che.jdt.ls.extension.api.dto.CheWorkspaceEdit;
 import org.eclipse.che.plugin.languageserver.ide.editor.quickassist.ApplyWorkspaceEditAction;
 import org.eclipse.lsp4j.ResourceChange;
@@ -50,7 +50,7 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
   private final ApplyWorkspaceEditAction applyWorkspaceEditAction;
   private final DtoFactory dtoFactory;
 
-  private Map<String, PreviewNode> nodes;
+  private Map<String, PreviewNode> fileNodes;
   private CheWorkspaceEdit workspaceEdit;
   private RefactoringActionDelegate refactoringActionDelegate;
 
@@ -65,6 +65,8 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
     this.applyWorkspaceEditAction = applyWorkspaceEditAction;
     this.dtoFactory = dtoFactory;
     this.view.setDelegate(this);
+
+    fileNodes = new LinkedHashMap<>();
   }
 
   public void show(String refactoringSessionId, RefactorInfo refactorInfo) {
@@ -116,7 +118,52 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
       view.showDiff(null);
       return;
     }
-    PreviewNode node = nodes.get(selectedNode.getUri());
+
+    List<TextEdit> edits = collectTextEditsForSelectedNode(selectedNode);
+
+    updateContentInCompareWidget(selectedNode, edits);
+  }
+
+  private void updateContentInCompareWidget(PreviewNode selectedNode, List<TextEdit> edits) {
+    String path = URIUtil.removePrefixUri(selectedNode.getUri());
+    Container workspaceRoot = appContext.getWorkspaceRoot();
+    Promise<Optional<File>> file = workspaceRoot.getFile(path);
+    file.then(
+        fileOptional -> {
+          if (!fileOptional.isPresent()) {
+            return;
+          }
+          File existingFile = fileOptional.get();
+          existingFile
+              .getContent()
+              .then(
+                  content -> {
+                    ChangePreview changePreview = dtoFactory.createDto(ChangePreview.class);
+                    changePreview.setFileName(existingFile.getName());
+                    changePreview.setOldContent(content);
+
+                    // apply all related TextEdit to show new content in compare widget
+                    StringBuilder output = new StringBuilder();
+                    new StringStreamEditor(edits, content, output).transform();
+                    String result = output.toString();
+
+                    changePreview.setNewContent(result);
+
+                    view.showDiff(changePreview);
+                  });
+        });
+  }
+
+  /**
+   * Finds all enabled TextEdit changes which are children of the selected node and collect them to
+   * the list.
+   *
+   * @param selectedNode the node which was selected
+   * @return list of the enabled changes
+   */
+  private List<TextEdit> collectTextEditsForSelectedNode(PreviewNode selectedNode) {
+    Either<ResourceChange, TextEdit> data = selectedNode.getData();
+    PreviewNode node = fileNodes.get(selectedNode.getUri());
     List<TextEdit> edits = new ArrayList<>();
     if (node.getId().equals(selectedNode.getId())) {
       for (PreviewNode child : node.getChildren()) {
@@ -128,31 +175,7 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
     } else if (data != null && selectedNode.isEnable()) {
       edits.add(data.getRight());
     }
-    Path path = toPath(selectedNode.getUri()).removeFirstSegments(1);
-    Container workspaceRoot = appContext.getWorkspaceRoot();
-    Promise<Optional<File>> file = workspaceRoot.getFile(path);
-    file.then(
-        arg -> {
-          if (!arg.isPresent()) {
-            return;
-          }
-          File existedFile = arg.get();
-          existedFile
-              .getContent()
-              .then(
-                  content -> {
-                    ChangePreview changePreview = dtoFactory.createDto(ChangePreview.class);
-                    changePreview.setFileName(existedFile.getName());
-                    changePreview.setOldContent(content);
-
-                    StringBuilder output = new StringBuilder();
-                    new StringStreamEditor(edits, content, output).transform();
-                    String result = output.toString();
-                    changePreview.setNewContent(result);
-
-                    view.showDiff(changePreview);
-                  });
-        });
+    return edits;
   }
 
   @Override
@@ -160,9 +183,9 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
     Either<ResourceChange, TextEdit> data = change.getData();
     if (data != null && data.isLeft()) {
       ResourceChange left = data.getLeft();
-      nodes.get(left.getNewUri()).setEnable(change.isEnable());
+      fileNodes.get(left.getNewUri()).setEnable(change.isEnable());
     } else {
-      PreviewNode previewNode = nodes.get(change.getUri());
+      PreviewNode previewNode = fileNodes.get(change.getUri());
       if (previewNode.getId().equals(change.getId())) {
         previewNode.setEnable(change.isEnable());
         for (PreviewNode node : previewNode.getChildren()) {
@@ -182,14 +205,15 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
       CheWorkspaceEdit workspaceEdit, RefactoringActionDelegate refactoringActionDelegate) {
     this.workspaceEdit = workspaceEdit;
     this.refactoringActionDelegate = refactoringActionDelegate;
-    nodes = new LinkedHashMap<>();
 
     prepareNodes(workspaceEdit);
-    view.setTreeOfChanges(nodes);
+
+    view.setTreeOfChanges(fileNodes);
     view.showDialog();
   }
 
   private void prepareNodes(CheWorkspaceEdit workspaceEdit) {
+    fileNodes.clear();
     prepareTextEditNodes(workspaceEdit.getChanges());
     prepareResourceChangeNodes(workspaceEdit.getResourceChanges());
   }
@@ -215,7 +239,7 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
                   + Path.valueOf(newUri).lastSegment()
                   + "'");
         } else {
-          String pathString = toPath(newUri).removeFirstSegments(1).toString();
+          String pathString = URIUtil.removePrefixUri(newUri);
           node.setDescription(
               "Move resource '"
                   + Path.valueOf(current).lastSegment()
@@ -223,11 +247,11 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
                   + Path.valueOf(pathString).removeLastSegments(1)
                   + "'");
         }
-        nodes.put(newUri, node);
+        fileNodes.put(newUri, node);
       } else if (current == null && newUri != null) {
-        String pathString = toPath(newUri).removeFirstSegments(1).toString();
+        String pathString = URIUtil.removePrefixUri(newUri);
         node.setDescription("Create resource: '" + Path.valueOf(pathString) + "'");
-        nodes.put(newUri, node);
+        fileNodes.put(newUri, node);
       }
     }
   }
@@ -239,9 +263,9 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
       parent.setEnable(true);
       String uniqueId = Document.get().createUniqueId();
       parent.setId(uniqueId);
-      Path path = toPath(uri).removeFirstSegments(1);
+      Path path = Path.valueOf(URIUtil.removePrefixUri(uri));
       parent.setDescription(path.lastSegment() + " - " + path.removeLastSegments(1));
-      nodes.put(uri, parent);
+      fileNodes.put(uri, parent);
       for (TextEdit change : changes.get(uri)) {
         PreviewNode child = new PreviewNode();
         child.setEnable(true);
@@ -255,7 +279,7 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
   }
 
   private void updateFinalEdits() {
-    for (PreviewNode node : nodes.values()) {
+    for (PreviewNode node : fileNodes.values()) {
       Either<ResourceChange, TextEdit> data = node.getData();
       if (data != null && data.isLeft()) {
         if (node.isEnable()) {
@@ -292,9 +316,5 @@ public class PreviewPresenter implements PreviewView.ActionDelegate {
         }
       }
     }
-  }
-
-  private Path toPath(String uri) {
-    return uri.startsWith("/") ? new Path(uri) : new Path(new UrlBuilder(uri).getPath());
   }
 }

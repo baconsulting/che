@@ -318,13 +318,14 @@ final class PreviewViewImpl extends Window implements PreviewView {
   }
 
   private void prepareDiffEditor(@NotNull ChangePreview preview) {
-    newFile.setName("Refactored Source");
-    oldFile.setName("Original Source");
     newFile = compareFactory.createFieOptions();
     newFile.setReadOnly(true);
 
     oldFile = compareFactory.createFieOptions();
     oldFile.setReadOnly(true);
+
+    newFile.setName("Refactored Source");
+    oldFile.setName("Original Source");
 
     refreshComperingFiles(preview);
 
